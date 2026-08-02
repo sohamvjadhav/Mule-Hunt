@@ -1,192 +1,386 @@
-# Mule-Hunt — UPI Fraud Detection with Graph Neural Networks
+# Mule-Hunt
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/sohamvjadhav/Mule-Hunt/actions/workflows/ci.yml/badge.svg)](https://github.com/sohamvjadhav/Mule-Hunt/actions/workflows/ci.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-Graph-neural-network fraud detection for **UPI-style payment graphs**: model
-transactions as a graph (accounts = nodes, transfers = edges) and detect
-coordinated fraud rings — mule accounts, shell merchants, cash-out chains —
-that per-transaction rules and tabular ML miss because every individual
-transaction looks normal in isolation.
+Mule-Hunt is a graph-neural-network (GNN) pipeline for detecting coordinated
+fraud in UPI-style payment networks.
 
+The project represents payment activity as a graph:
+
+- an account is a node;
+- a transfer is a directed edge; and
+- a planted fraud ring is a group of accounts that move money in a cycle.
+
+The model predicts which accounts belong to a fraud ring. This lets the
+pipeline evaluate network-level signals—such as unusual connectivity and
+coordinated cycles—that are invisible when each transaction is considered in
+isolation.
+
+> **Research/demo project:** all experiments use synthetic data. The scores in
+> this repository are not production fraud-detection claims and must not be
+> used to make decisions about real accounts.
+
+## What is included
+
+- Synthetic UPI-style graph generation using
+  [SantanderAI/gen-fraud-graph](https://github.com/SantanderAI/gen-fraud-graph).
+- A small built-in generator for tests and offline smoke runs.
+- CSV-to-[PyTorch Geometric](https://pyg.org/) graph loading.
+- Ring-aware train/validation/test splits that hold out complete fraud rings.
+- Two GNNs: GCN and GraphSAGE.
+- Non-graph baselines: Random Forest, HistGradientBoosting, and optional
+  XGBoost.
+- Leak-aware node feature construction and class-imbalance handling.
+- AUC, average precision, and whole-ring recovery metrics.
+- A FastAPI risk-scoring service with a lightweight dashboard.
+- Optional plain-language account explanations, with a deterministic local
+  fallback when no API key is configured.
+
+## How the pipeline works
+
+```text
+synthetic CSV graph
+        │
+        ▼
+account and transaction tables
+        │
+        ▼
+PyG Data object
+  ├── node features: account + connectivity
+  ├── directed transaction edges
+  ├── fraud-ring labels
+  └── ring-aware train/validation/test masks
+        │
+        ├── GraphSAGE / GCN
+        └── tabular baselines
+                │
+                ▼
+       held-out evaluation + risk scores
+                │
+                ▼
+        FastAPI service + dashboard
 ```
-accounts ---(transactions)---> accounts           account is a fraud-ring member?
-   |                                                |
-   v                                                v
-  tabular features (amount, time)              graph structure (who sends
-   |                                            money to whom, in loops)
-   v                                                v
-  rules / per-tx ML  ~~~~~misses rings~~~~>   GNN message passing detects
-                                               coordinated multi-account rings
+
+## Requirements
+
+- Python 3.11 or newer
+- Git, because the synthetic graph generator is installed from GitHub
+- `uv` is recommended for environment and dependency management
+- A CPU is sufficient for the included demo and tests
+
+## Installation
+
+Using `uv`:
+
+```bash
+git clone https://github.com/sohamvjadhav/Mule-Hunt.git
+cd Mule-Hunt
+
+uv venv --python 3.12
+source .venv/bin/activate       # Windows PowerShell: .venv\Scripts\Activate.ps1
+uv pip install -e ".[dev]"
 ```
 
-## Why graph-based detection
+Without `uv`:
 
-UPI (India's real-time payment rail, ~10B+ transactions/month) is targeted by
-organized fraud: mule accounts that receive, split, and forward stolen funds;
-rings of accounts cycling money to obscure the source. Two signatures only
-exist at the *network* level:
-
-- **Cyclic flow** — money circles back to the originator through several hops
-  (money-laundering "ring" pattern).
-- **Unusual connectivity** — mule accounts are densely wired to a small set of
-  counterparties; normal accounts are not.
-
-Per-transaction features (amount, time, location) cannot see either signature.
-Graph representations + message-passing can.
-
-## Repository layout
-
+```bash
+python3 -m venv .venv
+source .venv/bin/activate       # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
-src/upifraud/
-├── generate.py    # wraps SantanderAI/gen-fraud-graph (synthetic data, 100% private)
-├── dataset.py     # CSV graphs -> PyTorch Geometric Data + ring-aware train/test split
-├── features.py    # node features; drops zero-variance columns
-├── models.py      # GCN and GraphSAGE (PyG)
-├── train.py       # GNN training: class-imbalance weighting, early stopping
-├── baseline.py    # RandomForest / HistGradientBoosting / XGBoost on flattened features
-├── evaluate.py    # AUC, average precision, ring-recovery metrics
-├── api.py         # FastAPI risk-scoring service
-└── cli.py         # `upifraud` command line
+
+Verify the installation:
+
+```bash
+upifraud --version
+pytest
 ```
 
 ## Quick start
 
-```bash
-uv venv --python 3.12 && uv pip install -e ".[dev]"
-
-# 1. generate a synthetic UPI transaction graph (10k accounts, 90k transfers, 50 fraud rings)
-upifraud generate --scale 0.001 --rings 50 --output data/raw
-
-# 2. train the GNN + baselines + compare on the same held-out rings
-upifraud demo --scale 0.001 --rings 50
-
-# 3. reproduce the full hardness benchmark (low/medium/high) -> bench/results/benchmark.json
-upifraud benchmark --root bench --rings 50 --test-rings 10
-```
-
-The `demo` command runs the full pipeline: generate → train GNN → train
-baselines → comparison table → top risk accounts.
-
-### Individual commands
+Run the complete pipeline on a small synthetic graph:
 
 ```bash
-upifraud train-gnn     --data data/raw --model sage   # gcn | sage
-upifraud train-baseline --data data/raw --model rf    # rf | hgb | xgb
-upifraud evaluate --out-dir models
+upifraud demo --toy --rings 5
 ```
 
-### Risk-scoring API
+This command generates a toy graph, trains GraphSAGE, trains Random Forest and
+HistGradientBoosting baselines, evaluates all saved models, and prints the
+highest-scoring accounts. It writes generated data to `data/raw` and model
+artifacts to `models`.
+
+For a small graph produced by the external generator instead of the built-in
+toy generator:
+
+```bash
+upifraud demo --data data/external --out-dir models-external \
+  --scale 0.0001 --rings 10
+```
+
+After training, start the API and dashboard:
 
 ```bash
 upifraud serve --out-dir models
-curl http://127.0.0.1:8000/healthz
-curl http://127.0.0.1:8000/risk/account/acc_42
-curl -X POST http://127.0.0.1:8000/risk/batch -H 'Content-Type: application/json' \
-     -d '{"account_ids": ["acc_42", "acc_99"]}'
 ```
 
-Returns a `risk_score` (0–1), a `risk_band` (low/medium/high), and the account's
-risk rank across the graph.
+Open <http://127.0.0.1:8000> in a browser. The API is also available at:
 
-## Data: Santander `gen-fraud-graph`
+```bash
+curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/risk/account/acc_42
 
-All experiments run on the open-source synthetic graph generator from
-[SantanderAI/gen-fraud-graph](https://github.com/SantanderAI/gen-fraud-graph)
-(Apache-2.0). It emits account/transaction CSVs plus planted **fraud rings**
-(cyclic money-laundering patterns, 4–7 hops) and their metadata. No real
-financial data is used — the whole pipeline is private by construction.
+curl -X POST http://127.0.0.1:8000/risk/batch \
+  -H 'Content-Type: application/json' \
+  -d '{"account_ids": ["acc_42", "acc_99"]}'
+```
 
-| Flag | Meaning |
-|---|---|
-| `--scale` | `0.0001` ≈ 1k accounts / 9k tx; `0.001` ≈ 10k / 90k; `1.0` ≈ 10M / 90M |
-| `--toy` | tiny built-in generator (same CSV schema) for tests and quick smoke runs |
+The account IDs depend on the generated dataset, so replace `acc_42` and
+`acc_99` with IDs that exist in your graph.
+
+## Command-line reference
+
+The package exposes one command, `upifraud`, with the following subcommands.
+
+### Generate data
+
+```bash
+upifraud generate --output data/raw --scale 0.001 --rings 50
+```
+
+Use the built-in generator for a fast, deterministic smoke run:
+
+```bash
+upifraud generate --toy --output data/toy --toy-accounts 300 \
+  --toy-tx 2500 --rings 5 --seed 42
+```
+
+Important generation options:
+
+| Option | Default | Description |
+| --- | ---: | --- |
+| `--output` | `data/raw` | Directory for graph CSVs |
+| `--scale` | `0.001` | Scale passed to `gen-fraud-graph` |
+| `--rings` | generator default | Number of planted fraud rings |
+| `--hardness` | `low` | Synthetic difficulty: `low`, `medium`, or `high` |
+| `--workers` | `1` | Generator worker count |
+| `--toy` | off | Use the built-in generator |
+| `--seed` | `42` | Seed for the toy generator |
+
+The generated directory contains `accounts/`, `transactions/`, and `fraud/`.
+
+### Train a GNN
+
+```bash
+upifraud train-gnn \
+  --data data/raw \
+  --out-dir models \
+  --model sage \
+  --epochs 200 \
+  --test-rings 3
+```
+
+Available GNNs are `sage` and `gcn`. The default `rings` split holds out whole
+rings for testing. Use `--split random` only when you specifically want a
+random node split for comparison; it is less representative of discovering a
+previously unseen ring.
+
+The command saves:
+
+- `<model>.pt`: model weights;
+- `<model>_args.json`: model dimensions and feature standardization values; and
+- `graph.pt`: the processed graph and its split masks.
+
+### Train a baseline
+
+```bash
+upifraud train-baseline \
+  --data data/raw \
+  --out-dir models \
+  --model rf
+```
+
+Available baselines are `rf`, `hgb`, and `xgb`. Install the optional XGBoost
+dependency before using `xgb`:
+
+```bash
+python -m pip install -e ".[dev,xgb]"
+```
+
+### Compare saved models
+
+```bash
+upifraud evaluate --out-dir models
+```
+
+This reads the saved graph and model artifacts and prints AUC, average
+precision, mean ring recall, and fraud hit rate at the evaluation cutoff.
+
+### Run the benchmark matrix
+
+```bash
+upifraud benchmark \
+  --root bench \
+  --scale 0.001 \
+  --rings 50 \
+  --test-rings 10
+```
+
+The benchmark trains the selected GNN and baselines at each requested
+hardness level and writes `bench/results/benchmark.json`. Add
+`--regenerate` to replace already-generated benchmark data.
+
+## Data and features
+
+The external generator is the open-source synthetic
+[gen-fraud-graph](https://github.com/SantanderAI/gen-fraud-graph) project,
+used under Apache-2.0. No real financial data is included or required.
+
+Mule-Hunt loads account CSVs, transaction CSVs, fraud transaction labels, and
+fraud-case metadata into one PyG graph. Each account receives a node label of
+`1` when it belongs to a planted ring and `0` otherwise.
+
+By default, the node representation uses account and structural features:
+
+- log balance;
+- account risk score;
+- account age;
+- in-degree and out-degree; and
+- unique inbound and outbound counterparties.
+
+Constant columns are removed before training. `--amount-stats` adds inbound and
+outbound amount aggregates, but those features are intentionally excluded by
+default: the synthetic generator uses a distinctive amount for planted ring
+transactions, so amount aggregates can reveal the label through a benchmark
+artifact rather than through network structure.
 
 ## Evaluation protocol
 
-Two design choices make the benchmark honest — and are worth defending:
+The default evaluation is designed to test whether a model can find new rings:
 
-1. **Ring-aware split.** Whole rings are held out for testing, never individual
-   accounts. A random node split would leak ring structure into training and
-   flatter the results.
-2. **Leak-free features.** `gen-fraud-graph` encodes ring transfers with a
-   distinctive amount (9999). Feeding amount aggregates into the model makes
-   detection *trivial and unrealistic*:
+1. Fraud rings are split as groups, not as individual accounts.
+2. All members of a held-out ring stay in the same test split.
+3. Normal accounts are sampled into train, validation, and test splits.
+4. Training uses class-weighted binary cross-entropy and early stopping on
+   validation average precision.
+5. Results are reported on the held-out test accounts.
 
-   | Features | GNN AUC | RF AUC |
-   |---|---|---|
-   | + amount stats (leaky) | 1.00 | 1.00 |
-   | structural only (honest) | 0.63 | 0.61 |
+The main metrics are:
 
-   The default pipeline uses structural + account features only, so the
-   measured performance reflects *network-signal* detection, not a synthetic
-   artifact.
+- **AUC:** ranking quality across positive and negative accounts;
+- **average precision (AP):** more informative than accuracy for the imbalanced
+  fraud labels; and
+- **mean ring recall:** the average fraction of each held-out ring recovered in
+  the top-`k` ranked accounts, where `k` is the test-set size.
 
-### Results — hardness matrix (10k accounts, 90k transfers, 50 rings; 10 held out)
+### Current benchmark results
 
-Hardness controls how realistic the fraud is: `low` = sentinel amounts,
-disjoint rings; `medium` = amount jitter + overlapping rings; `high` = jitter,
-overlap, and legitimate decoy cycles. Full JSON: [`results/benchmark.json`](results/benchmark.json).
-Reproduce with `upifraud benchmark --root bench --rings 50 --test-rings 10`.
+The committed benchmark uses approximately 10,000 accounts, 90,000 transfers,
+50 rings, and 10 held-out rings. The generator has its own randomness, so
+numbers may vary slightly between runs.
 
 | Hardness | Model | AUC | AP | Mean ring recall |
-|---|---|---|---|---|
+| --- | --- | ---: | ---: | ---: |
 | low | GraphSAGE | **0.671** | 0.062 | **0.315** |
-| low | RandomForest | 0.607 | 0.064 | 0.195 |
-| medium | GraphSAGE | **0.638** | 0.062 | **0.326** |
-| medium | RandomForest | 0.520 | 0.036 | 0.217 |
+| low | Random Forest | 0.607 | 0.064 | 0.195 |
+| medium | GraphSAGE | **0.638** | **0.062** | **0.326** |
+| medium | Random Forest | 0.520 | 0.036 | 0.217 |
 | high | GraphSAGE | **0.630** | **0.053** | **0.287** |
-| high | RandomForest | 0.495 | 0.042 | 0.138 |
+| high | Random Forest | 0.495 | 0.042 | 0.138 |
 
-The pattern matters more than the absolute numbers: as fraud becomes
-realistic (harder), the tabular baseline degrades while the GNN holds — the
-AUC gap grows from **0.06 (low) → 0.12 (medium) → 0.14 (high)**. Amount-only
-and cycle-only heuristics are designed to fail at high hardness; the GNN's
-advantage is exactly where naive detection stops working.
+Full results are in [`results/benchmark.json`](results/benchmark.json). The
+important comparison is the trend: as the synthetic fraud becomes harder,
+Random Forest loses ranking quality while GraphSAGE retains a positive signal.
 
-AP ~0.03–0.06 looks small but the test set is ~1% fraud — precision is 3–6x
-the base rate. Numbers vary slightly between runs because the generator does
-not expose a seed (it uses its own RNG).
+## Risk API
 
-## Known limitations (honest list)
+`upifraud serve` loads a trained GNN checkpoint and `graph.pt` from the same
+output directory. It exposes both machine-readable risk scores and the
+dashboard endpoints.
 
-- **Synthetic data.** Results transfer imperfectly to production; `gen-fraud-graph`
-  is a benchmark, not a bank. Real deployment needs a labeled graph from a
-  payment provider.
-- **2-hop receptive field.** GCN/GraphSAGE with 2 layers cannot see rings
-  longer than the receptive field; deeper models or ring-structure features
-  (e.g., cycle counts) are next steps.
-- **Cold-start accounts.** New accounts have no neighborhood — the model must
-  fall back to account-level features.
-- **Text/embeddings unused.** Transaction descriptions and `embedding` vectors
-  are generated but not consumed; natural next feature.
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/healthz` | Service status, model name, and node count |
+| `GET` | `/risk/account/{account_id}` | Risk score for one account |
+| `POST` | `/risk/batch` | Risk scores for multiple account IDs |
+| `GET` | `/api/summary` | Dataset and model summary |
+| `GET` | `/api/top?k=50` | Highest-risk accounts |
+| `GET` | `/api/account/{account_id}` | Account details and high-risk neighbors |
+| `GET` | `/api/ring/{ring_id}` | Ring members and internal edges |
+| `GET` | `/api/distribution?bins=20` | Risk-score histogram |
+| `GET` | `/api/explain/{account_id}` | Plain-language risk explanation |
 
-## FAQ / panel answers
+Risk scores are in `[0, 1]` and mapped to bands as follows:
 
-**"It's all synthetic — so what?"**
-`gen-fraud-graph` was built for exactly this benchmarking use case, with
-configurable hardness and planted ground-truth rings. We measure what matters —
-recovery of whole rings on held-out rings — and we report the leak honestly.
-The same code path ingests any CSV graph with the same schema.
+- `low`: score `< 0.4`;
+- `medium`: `0.4 ≤ score < 0.7`; and
+- `high`: score `≥ 0.7`.
 
-**"You just called a library."**
-The pipeline implements the hard parts: CSV→graph construction, ring-aware
-splits, leak-free featurization, imbalance-aware training, and ring-recovery
-evaluation — the pieces `torch_geometric` does not provide.
+Explanations are generated locally by default. Set `OPENAI_API_KEY` before
+starting the service to enable the optional remote explanation path; the
+service falls back to the local explanation if the request fails.
 
-**"Why not XGBoost?"**
-XGBoost is supported (`--model xgb`) but its OpenMP runtime conflicts with
-torch's on macOS (native segfault — see git history), so the default boosted
-baseline is sklearn's HistGradientBoosting, which is equivalent in practice.
+## Repository layout
 
-## Roadmap
+```text
+src/upifraud/
+├── api.py          FastAPI risk service and dashboard endpoints
+├── baseline.py     Random Forest, HGB, and XGBoost baselines
+├── cli.py          upifraud command-line interface
+├── dataset.py      CSV loading and ring-aware splitting
+├── evaluate.py     AUC, AP, and ring-recovery metrics
+├── features.py     Account and graph feature construction
+├── generate.py     External and toy graph generators
+├── models.py       GCN and GraphSAGE definitions
+└── train.py        GNN training and checkpoint serialization
 
-- [ ] Edge-level (transaction) classification + temporal features
-- [ ] Cycle/flow features (e.g., 3-cycle counts) beyond 2-hop message passing
-- [ ] Cold-start handling and drift monitoring in the API
-- [x] Hardness benchmark matrix (`upifraud benchmark`) with reproducible results
+frontend/           Static dashboard assets
+tests/              Unit and API tests
+results/            Committed benchmark output
+pyproject.toml      Package metadata and dependencies
+CONTRIBUTING.md     Contribution workflow
+```
+
+## Development
+
+Run the test suite and linter before submitting changes:
+
+```bash
+pytest
+ruff check .
+```
+
+For quick iteration, use the toy generator:
+
+```bash
+upifraud demo --toy --toy-accounts 120 --toy-tx 500 --rings 3
+```
+
+The project is intentionally synthetic and privacy-preserving. Do not add
+secrets, real payment data, or personally identifiable information to the
+repository. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contribution
+workflow.
+
+## Limitations and next steps
+
+- **Synthetic data:** benchmark behavior may not transfer to production payment
+  networks.
+- **Node-level labels:** the current target is ring membership; transaction-level
+  classification is not implemented yet.
+- **Two message-passing layers:** the current GCN and GraphSAGE models have a
+  limited receptive field for long or indirect rings.
+- **Cold-start accounts:** new accounts with little graph history need a
+  separate fallback strategy.
+- **No monitoring loop:** drift detection, threshold calibration, and feedback
+  from investigators are outside the current service.
+- **Unused text/embeddings:** generated descriptions and embeddings are not yet
+  consumed by the model.
+
+Planned directions include temporal and edge-level modeling, explicit cycle and
+flow features, cold-start handling, and production-style drift monitoring.
 
 ## License
 
-MIT. Data generator used under Apache-2.0 from Santander AI.
+Mule-Hunt is released under the [MIT License](LICENSE). The synthetic graph
+generator is a separate dependency distributed under Apache-2.0.

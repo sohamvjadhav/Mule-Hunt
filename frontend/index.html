@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mule-Hunt — UPI Fraud Risk Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=Albert+Sans:ital@0;1&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Mule-Hunt</span>
+      <span class="brand-sub">UPI fraud risk dashboard</span>
+    </div>
+    <div class="model-badge" id="model-badge">loading…</div>
+  </header>
+
+  <main>
+    <section class="cards" id="cards">
+      <div class="card"><div class="card-value" id="c-accounts">–</div><div class="card-label">Accounts</div></div>
+      <div class="card"><div class="card-value" id="c-tx">–</div><div class="card-label">Transactions</div></div>
+      <div class="card"><div class="card-value" id="c-fraud">–</div><div class="card-label">Flagged fraud accounts</div></div>
+      <div class="card"><div class="card-value" id="c-rings">–</div><div class="card-label">Fraud rings</div></div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Top risk accounts</h2>
+        <div class="table-wrap">
+          <table id="top-table">
+            <thead>
+              <tr><th>#</th><th>Account</th><th>Risk score</th><th>Band</th><th>Ring</th><th>Label</th><th>Degree</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Risk score distribution</h2>
+        <canvas id="dist-chart" height="180"></canvas>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Ring explorer
+          <select id="ring-select"></select>
+        </h2>
+        <div class="ring-layout">
+          <svg id="ring-svg" width="420" height="420" viewBox="0 0 420 420"></svg>
+          <div class="ring-list" id="ring-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Account detail</h2>
+        <div class="detail" id="detail">
+          <p class="muted">Select an account in the top table to inspect its risk and highest-risk neighbors.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="footer-credit">Mule-Hunt ·
+      <a href="https://github.com/sohamvjadhav/Mule-Hunt" target="_blank" rel="noopener">GitHub</a> ·
+      <a href="https://github.com/sohamvjadhav/Mule-Hunt/issues" target="_blank" rel="noopener">Issues</a>
+    </span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
