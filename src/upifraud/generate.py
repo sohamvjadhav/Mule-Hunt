@@ -15,6 +15,7 @@ def run_gen_fraud_graph(
     scale: float = 0.001,
     num_fraud_rings: int | None = None,
     workers: int = 2,
+    hardness: str = "low",
 ) -> None:
     from gen_fraud_graph import Config, FraudGraphGenerator
 
@@ -24,6 +25,7 @@ def run_gen_fraud_graph(
         embedding_provider="fake",
         workers=workers,
         output_dir=str(output_dir),
+        hardness=hardness,
     )
     FraudGraphGenerator(config).run()
 

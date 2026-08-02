@@ -34,28 +34,24 @@ def build_node_features(
 
     features = [bal, risk, age_days, in_deg, out_deg]
 
-    unique_in = np.zeros(n_nodes)
-    unique_out = np.zeros(n_nodes)
-    for i in range(n_nodes):
-        unique_out[i] = len(np.unique(src[dst == i])) if np.any(dst == i) else 0
-        unique_in[i] = len(np.unique(dst[src == i])) if np.any(src == i) else 0
-    features += [unique_in, unique_out]
+    edges_df = pd.DataFrame({"src": src, "dst": dst})
+    unique_out = edges_df.groupby("dst")["src"].nunique().reindex(range(n_nodes), fill_value=0)
+    unique_in = edges_df.groupby("src")["dst"].nunique().reindex(range(n_nodes), fill_value=0)
+    features += [unique_in.to_numpy(), unique_out.to_numpy()]
 
     if with_amount_stats:
-        in_amt = np.zeros(n_nodes)
-        out_amt = np.zeros(n_nodes)
-        in_cnt = np.zeros(n_nodes)
-        out_cnt = np.zeros(n_nodes)
-        for i in range(len(amt)):
-            out_amt[src[i]] += amt[i]
-            in_amt[dst[i]] += amt[i]
-            out_cnt[src[i]] += 1
-            in_cnt[dst[i]] += 1
+        edges_df["amount"] = amt
+        agg = edges_df.groupby("src")["amount"].agg(["sum", "mean", "count"])
+        out_sum = agg["sum"].reindex(range(n_nodes), fill_value=0.0)
+        out_mean = agg["mean"].reindex(range(n_nodes), fill_value=0.0)
+        agg_in = edges_df.groupby("dst")["amount"].agg(["sum", "mean", "count"])
+        in_sum = agg_in["sum"].reindex(range(n_nodes), fill_value=0.0)
+        in_mean = agg_in["mean"].reindex(range(n_nodes), fill_value=0.0)
         features += [
-            np.log1p(in_amt / np.maximum(in_cnt, 1)),
-            np.log1p(out_amt / np.maximum(out_cnt, 1)),
-            np.log1p(in_amt),
-            np.log1p(out_amt),
+            np.log1p(in_mean.to_numpy()),
+            np.log1p(out_mean.to_numpy()),
+            np.log1p(in_sum.to_numpy()),
+            np.log1p(out_sum.to_numpy()),
         ]
 
     return torch.tensor(np.stack(features, axis=1), dtype=torch.float32)

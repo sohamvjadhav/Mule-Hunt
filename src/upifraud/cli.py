@@ -32,7 +32,13 @@ def cmd_generate(args) -> None:
     if args.toy:
         generate_toy(out, n_accounts=args.toy_accounts, n_tx=args.toy_tx, n_rings=args.rings, seed=args.seed)
     else:
-        run_gen_fraud_graph(out, scale=args.scale, num_fraud_rings=args.rings, workers=args.workers)
+        run_gen_fraud_graph(
+            out,
+            scale=args.scale,
+            num_fraud_rings=args.rings,
+            workers=args.workers,
+            hardness=args.hardness,
+        )
     print(f"generated graph CSVs in {out.resolve()}")
 
 
@@ -137,6 +143,7 @@ def cmd_demo(args) -> None:
             argparse.Namespace(
                 output=str(data_dir), toy=args.toy, scale=args.scale, rings=args.rings,
                 workers=args.workers, seed=args.seed, toy_accounts=args.toy_accounts, toy_tx=args.toy_tx,
+                hardness=args.hardness,
             )
         )
     print("== training GNN ==")
@@ -170,6 +177,67 @@ def cmd_demo(args) -> None:
               f"ring={row['ring_id']:<3} label={row['true_label']}")
 
 
+def cmd_benchmark(args) -> None:
+    """Run the hardness matrix: GNN + baselines at low/medium/high difficulty."""
+    import shutil
+
+    from .evaluate import ring_recovery
+
+    root = Path(args.root)
+    results_dir = root / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    outcomes = {}
+    for hardness in args.hardness:
+        data_dir = root / f"data_{hardness}"
+        out = root / f"models_{hardness}"
+        if (not (data_dir / "accounts").exists()) or args.regenerate:
+            shutil.rmtree(data_dir, ignore_errors=True)
+            cmd_generate(
+                argparse.Namespace(
+                    output=str(data_dir), toy=False, scale=args.scale, rings=args.rings,
+                    workers=1, seed=args.seed, toy_accounts=0, toy_tx=0, hardness=hardness,
+                )
+            )
+        print(f"== training {hardness} ==")
+        data = load_graph(
+            data_dir,
+            with_amount_stats=args.amount_stats,
+            split="rings",
+            test_rings=args.test_rings,
+            seed=args.seed,
+        )
+        gnn = train_gnn(
+            data, model_name=args.model, hidden=args.hidden, epochs=args.epochs,
+            lr=args.lr, patience=args.patience, seed=args.seed, out_dir=out,
+        )
+        rows = []
+        gnn_test = evaluate_gnn(data, gnn["scores"], split="test")
+        gnn_ring = ring_recovery(data, gnn["scores"], split="test")
+        rows.append({
+            "hardness": hardness, "model": args.model,
+            "auc": gnn_test["auc"], "ap": gnn_test["ap"],
+            "mean_ring_recall": gnn_ring["mean_ring_recall"],
+        })
+        torch.save(data, out / "graph.pt")
+        for base in args.baselines:
+            result = train_baseline(data, model_name=base, seed=args.seed, out_dir=out)
+            eval_ = evaluate_baseline(data, result["scores"], split="test")
+            rec = ring_recovery(data, result["scores"], split="test")
+            rows.append({
+                "hardness": hardness, "model": base,
+                "auc": eval_["auc"], "ap": eval_["ap"],
+                "mean_ring_recall": rec["mean_ring_recall"],
+            })
+        for r in rows:
+            print(f"  {r['hardness']:<7} {r['model']:<4} auc={r['auc']:.3f} "
+                  f"ap={r['ap']:.3f} ring_recall={r['mean_ring_recall']:.3f}")
+        outcomes[hardness] = rows
+    (results_dir / "benchmark.json").write_text(
+        json.dumps(outcomes, indent=2, sort_keys=True)
+    )
+    print(f"benchmark results written to {results_dir / 'benchmark.json'}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="upifraud", description="UPI fraud detection with GNNs")
     parser.add_argument("--version", action="version", version=f"upi-fraud-gnn {__version__}")
@@ -179,7 +247,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--output", default="data/raw")
     p.add_argument("--scale", type=float, default=0.001)
     p.add_argument("--rings", type=int, default=None)
-    p.add_argument("--workers", type=int, default=2)
+    p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--hardness", choices=["low", "medium", "high"], default="low")
     p.add_argument("--toy", action="store_true", help="use the tiny built-in generator (tests)")
     p.add_argument("--toy-accounts", type=int, default=300)
     p.add_argument("--toy-tx", type=int, default=2500)
@@ -238,6 +307,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--amount-stats", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_demo)
+
+    p = sub.add_parser("benchmark", help="run the hardness benchmark matrix (low/medium/high)")
+    p.add_argument("--root", default="bench")
+    p.add_argument("--scale", type=float, default=0.001)
+    p.add_argument("--rings", type=int, default=None)
+    p.add_argument("--hardness", nargs="+", choices=["low", "medium", "high"], default=["low", "medium", "high"])
+    p.add_argument("--model", choices=["gcn", "sage"], default="sage")
+    p.add_argument("--baselines", nargs="+", choices=["rf", "hgb", "xgb"], default=["rf"])
+    p.add_argument("--hidden", type=int, default=64)
+    p.add_argument("--epochs", type=int, default=200)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--patience", type=int, default=15)
+    p.add_argument("--test-rings", type=int, default=3)
+    p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--regenerate", action="store_true")
+    p.add_argument("--seed", type=int, default=42)
+    p.set_defaults(func=cmd_benchmark)
 
     args = parser.parse_args(argv)
     args.func(args)

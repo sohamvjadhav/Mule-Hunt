@@ -56,11 +56,14 @@ src/upifraud/
 ```bash
 uv venv --python 3.12 && uv pip install -e ".[dev]"
 
-# 1. generate a synthetic UPI transaction graph (10k accounts, 90k transfers, 10 fraud rings)
-upifraud generate --scale 0.001 --output data/raw
+# 1. generate a synthetic UPI transaction graph (10k accounts, 90k transfers, 50 fraud rings)
+upifraud generate --scale 0.001 --rings 50 --output data/raw
 
 # 2. train the GNN + baselines + compare on the same held-out rings
-upifraud demo --scale 0.001
+upifraud demo --scale 0.001 --rings 50
+
+# 3. reproduce the full hardness benchmark (low/medium/high) -> bench/results/benchmark.json
+upifraud benchmark --root bench --rings 50 --test-rings 10
 ```
 
 The `demo` command runs the full pipeline: generate → train GNN → train
@@ -120,18 +123,31 @@ Two design choices make the benchmark honest — and are worth defending:
    measured performance reflects *network-signal* detection, not a synthetic
    artifact.
 
-### Results (10k accounts, 90k transfers, 10 rings; 3 rings held out)
+### Results — hardness matrix (10k accounts, 90k transfers, 50 rings; 10 held out)
 
-| Model | AUC | AP | Mean ring recall | Fraud hit@K |
+Hardness controls how realistic the fraud is: `low` = sentinel amounts,
+disjoint rings; `medium` = amount jitter + overlapping rings; `high` = jitter,
+overlap, and legitimate decoy cycles. Full JSON: [`results/benchmark.json`](results/benchmark.json).
+Reproduce with `upifraud benchmark --root bench --rings 50 --test-rings 10`.
+
+| Hardness | Model | AUC | AP | Mean ring recall |
 |---|---|---|---|---|
-| GraphSAGE | **0.631** | 0.023 | **0.367** | **0.357** |
-| HistGradientBoosting | 0.616 | **0.041** | 0.350 | 0.357 |
-| RandomForest | 0.607 | 0.024 | 0.283 | 0.286 |
-| GCN | 0.585 | 0.012 | 0.150 | 0.143 |
+| low | GraphSAGE | **0.671** | 0.062 | **0.315** |
+| low | RandomForest | 0.607 | 0.064 | 0.195 |
+| medium | GraphSAGE | **0.638** | 0.062 | **0.326** |
+| medium | RandomForest | 0.520 | 0.036 | 0.217 |
+| high | GraphSAGE | **0.630** | **0.053** | **0.287** |
+| high | RandomForest | 0.495 | 0.042 | 0.138 |
 
-AP ~0.02–0.04 looks small but the test set is ~1% fraud — the GNN's precision
-is ~2–4x the base rate. Numbers vary slightly between runs because the
-generator does not expose a seed (it uses its own RNG).
+The pattern matters more than the absolute numbers: as fraud becomes
+realistic (harder), the tabular baseline degrades while the GNN holds — the
+AUC gap grows from **0.06 (low) → 0.12 (medium) → 0.14 (high)**. Amount-only
+and cycle-only heuristics are designed to fail at high hardness; the GNN's
+advantage is exactly where naive detection stops working.
+
+AP ~0.03–0.06 looks small but the test set is ~1% fraud — precision is 3–6x
+the base rate. Numbers vary slightly between runs because the generator does
+not expose a seed (it uses its own RNG).
 
 ## Known limitations (honest list)
 
@@ -167,9 +183,9 @@ baseline is sklearn's HistGradientBoosting, which is equivalent in practice.
 ## Roadmap
 
 - [ ] Edge-level (transaction) classification + temporal features
-- [ ] Realistic harder rings (higher `hardness` in the generator, overlapping rings)
 - [ ] Cycle/flow features (e.g., 3-cycle counts) beyond 2-hop message passing
 - [ ] Cold-start handling and drift monitoring in the API
+- [x] Hardness benchmark matrix (`upifraud benchmark`) with reproducible results
 
 ## License
 
