@@ -131,7 +131,9 @@ def cmd_evaluate(args) -> None:
 def cmd_serve(args) -> None:
     import uvicorn
 
-    app = create_app(Path(args.out_dir), Path(args.out_dir) / "graph.pt")
+
+    frontend = Path(args.frontend) if args.frontend else None
+    app = create_app(Path(args.out_dir), Path(args.out_dir) / "graph.pt", frontend_dir=frontend)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
@@ -283,10 +285,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out-dir", default="models")
     p.set_defaults(func=cmd_evaluate)
 
-    p = sub.add_parser("serve", help="run the FastAPI risk-scoring service")
+    p = sub.add_parser("serve", help="run the FastAPI risk-scoring service + dashboard")
     p.add_argument("--out-dir", default="models")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--frontend", default=None, help="path to frontend dir (default: repo frontend/)")
     p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("demo", help="end-to-end run on a small graph")
