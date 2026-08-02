@@ -34,7 +34,10 @@ def band(score: float) -> str:
 
 
 def create_app(checkpoint_dir: Path, dataset_path: Path, top_n: int = 1000) -> FastAPI:
-    checkpoint = next(checkpoint_dir.glob("*.pt"))
+    candidates = sorted(p for p in checkpoint_dir.glob("*.pt") if p.stem != "graph")
+    if not candidates:
+        raise FileNotFoundError(f"no model checkpoint (*.pt) in {checkpoint_dir}")
+    checkpoint = candidates[0]
     args = json.loads((checkpoint_dir / f"{checkpoint.stem}_args.json").read_text())
     state = torch.load(checkpoint, map_location="cpu")
 
