@@ -12,6 +12,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import cross_val_score
 from torch_geometric.data import Data
 
+from .evaluate import operating_point
 from .train import standardize
 
 
@@ -91,4 +92,5 @@ def evaluate_baseline(data: Data, scores: np.ndarray, split: str = "test") -> di
         "ap": float(average_precision_score(y, s)),
         "n_fraud": int(y.sum()),
         "n_total": len(y),
+        "operating_point": operating_point(data, scores, split),
     }

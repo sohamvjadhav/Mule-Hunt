@@ -46,6 +46,7 @@ def cmd_train_gnn(args) -> None:
     data = load_graph(
         Path(args.data),
         with_amount_stats=args.amount_stats,
+        with_cycle_counts=args.cycle_counts,
         split=args.split,
         test_rings=args.test_rings,
         seed=args.seed,
@@ -71,6 +72,7 @@ def cmd_train_baseline(args) -> None:
     data = load_graph(
         Path(args.data),
         with_amount_stats=args.amount_stats,
+        with_cycle_counts=args.cycle_counts,
         split=args.split,
         test_rings=args.test_rings,
         seed=args.seed,
@@ -152,13 +154,15 @@ def cmd_demo(args) -> None:
     cmd_train_gnn(argparse.Namespace(
         data=str(data_dir), out_dir=str(out), model=args.model, hidden=args.hidden,
         epochs=args.epochs, lr=args.lr, patience=args.patience, seed=args.seed,
-        amount_stats=args.amount_stats, split="rings", test_rings=args.test_rings,
+        amount_stats=args.amount_stats, cycle_counts=args.cycle_counts,
+        split="rings", test_rings=args.test_rings,
     ))
     print("== training baselines ==")
     for base in ("rf", "hgb"):
         cmd_train_baseline(argparse.Namespace(
             data=str(data_dir), out_dir=str(out), model=base, seed=args.seed,
-            amount_stats=args.amount_stats, split="rings", test_rings=args.test_rings,
+            amount_stats=args.amount_stats, cycle_counts=args.cycle_counts,
+            split="rings", test_rings=args.test_rings,
         ))
     print("== comparison ==")
     cmd_evaluate(argparse.Namespace(out_dir=str(out)))
@@ -204,6 +208,7 @@ def cmd_benchmark(args) -> None:
         data = load_graph(
             data_dir,
             with_amount_stats=args.amount_stats,
+            with_cycle_counts=args.cycle_counts,
             split="rings",
             test_rings=args.test_rings,
             seed=args.seed,
@@ -268,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--split", choices=["rings", "random"], default="rings")
     p.add_argument("--test-rings", type=int, default=3)
     p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_train_gnn)
 
@@ -278,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--split", choices=["rings", "random"], default="rings")
     p.add_argument("--test-rings", type=int, default=3)
     p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_train_baseline)
 
@@ -299,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rings", type=int, default=None)
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--toy", action="store_true")
+    p.add_argument("--hardness", choices=["low", "medium", "high"], default="low")
     p.add_argument("--toy-accounts", type=int, default=300)
     p.add_argument("--toy-tx", type=int, default=2500)
     p.add_argument("--model", choices=["gcn", "sage"], default="sage")
@@ -308,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--test-rings", type=int, default=3)
     p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_demo)
 
@@ -324,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--test-rings", type=int, default=3)
     p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
     p.add_argument("--regenerate", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_benchmark)

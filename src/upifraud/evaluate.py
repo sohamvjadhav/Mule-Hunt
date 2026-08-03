@@ -54,6 +54,39 @@ def ring_recovery(
     }
 
 
+def operating_point(data: Data, scores: np.ndarray, split: str = "test") -> dict:
+    """F1-maximizing operating threshold with the precision/recall achieved
+    there. AUC summarizes the whole curve, but an investigator must deploy
+    with one threshold; precision/recall at the best-F1 point on held-out
+    rings is the honest deployment-relevant number.
+    """
+    mask = getattr(data, f"{split}_mask").numpy()
+    y = data.y.numpy()[mask]
+    s = scores[mask]
+    order = np.argsort(-s)
+    y_sorted = y[order]
+    tp = np.cumsum(y_sorted)
+    fp = np.cumsum(1 - y_sorted)
+    recall = tp / max(int(tp[-1]), 1)
+    denom = tp + fp
+    precision = np.divide(tp, denom, out=np.zeros_like(tp, dtype=float), where=denom > 0)
+    f1 = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(tp, dtype=float),
+        where=(precision + recall) > 0,
+    )
+    best = int(np.argmax(f1))
+    return {
+        "threshold": float(s[order[best]]),
+        "precision": float(precision[best]),
+        "recall": float(recall[best]),
+        "f1": float(f1[best]),
+        "n_fraud_detected": int(tp[best]),
+        "n_flagged": int(tp[best] + fp[best]),
+    }
+
+
 def top_fraud_accounts(data: Data, scores: np.ndarray, k: int = 20) -> list[dict]:
     order = np.argsort(-scores)[:k]
     out = []

@@ -15,6 +15,7 @@ from .features import build_node_features, drop_constant_columns
 def load_graph(
     data_dir: Path,
     with_amount_stats: bool = False,
+    with_cycle_counts: bool = False,
     split: str = "rings",
     test_rings: int = 3,
     val_frac: float = 0.15,
@@ -73,9 +74,17 @@ def load_graph(
         if aid in id_to_idx:
             y[id_to_idx[aid]] = 1
 
-    x = drop_constant_columns(
-        build_node_features(accounts, edge_index, edge_amounts, n_nodes, with_amount_stats)
+    base_names = ["balance", "risk_score", "age_days", "in_deg", "out_deg", "unique_in", "unique_out"]
+    if with_amount_stats:
+        base_names += ["amt_in_mean", "amt_out_mean", "amt_in_sum", "amt_out_sum"]
+    if with_cycle_counts:
+        base_names += ["triangle_count", "clustering_coef"]
+
+    x_full = build_node_features(
+        accounts, edge_index, edge_amounts, n_nodes, with_amount_stats, with_cycle_counts
     )
+    x, keep = drop_constant_columns(x_full)
+    feature_names = [base_names[i] for i in keep]
 
     ring_id = torch.full((n_nodes,), -1, dtype=torch.long)
     for i, ring in enumerate(rings):
@@ -92,6 +101,7 @@ def load_graph(
         num_rings=len(rings),
     )
     data.node_ids = list(accounts["account_id"])
+    data.feature_names = feature_names
 
     if split == "rings":
         _ring_aware_split(data, rng, test_rings, val_frac)
