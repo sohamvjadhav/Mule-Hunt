@@ -10,6 +10,7 @@ import torch
 from sklearn.metrics import average_precision_score, roc_auc_score
 from torch_geometric.data import Data
 
+from .evaluate import operating_point
 from .models import build_model
 
 DEVICE = "cpu"
@@ -116,4 +117,5 @@ def evaluate_gnn(data: Data, scores: np.ndarray, split: str = "test") -> dict:
         "ap": float(average_precision_score(y, s)),
         "n_fraud": int(y.sum()),
         "n_total": len(y),
+        "operating_point": operating_point(data, scores, split),
     }

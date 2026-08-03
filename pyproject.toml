@@ -26,12 +26,15 @@ dependencies = [
     "scikit-learn>=1.3",
     "fastapi>=0.110",
     "uvicorn>=0.29",
-    "gen-fraud-graph@git+https://github.com/SantanderAI/gen-fraud-graph.git",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.4", "httpx>=0.27"]
 xgb = ["xgboost>=2.0"]
+
+# The synthetic generator (gen-fraud-graph, Apache-2.0) is a git dependency and
+# cannot ship in PyPI metadata; install it manually for `upifraud generate`:
+#   pip install "gen-fraud-graph @ git+https://github.com/SantanderAI/gen-fraud-graph.git"
 
 [project.scripts]
 upifraud = "upifraud.cli:main"

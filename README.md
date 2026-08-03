@@ -265,6 +265,13 @@ default: the synthetic generator uses a distinctive amount for planted ring
 transactions, so amount aggregates can reveal the label through a benchmark
 artifact rather than through network structure.
 
+`--cycle-counts` adds per-node triangle counts and the local clustering
+coefficient (undirected 3-cycle structure, computed in milliseconds on the
+10k-node graph via sparse adjacency multiplication). The experiment is
+documented below: on gen-fraud-graph data, 32% of ring nodes sit in at least
+one triangle (vs 24% of normal nodes), but the overlap is large and the
+features did not help the GNN.
+
 ## Evaluation protocol
 
 The default evaluation is designed to test whether a model can find new rings:
@@ -280,9 +287,11 @@ The main metrics are:
 
 - **AUC:** ranking quality across positive and negative accounts;
 - **average precision (AP):** more informative than accuracy for the imbalanced
-  fraud labels; and
+  fraud labels;
 - **mean ring recall:** the average fraction of each held-out ring recovered in
-  the top-`k` ranked accounts, where `k` is the test-set size.
+  the top-`k` ranked accounts, where `k` is the test-set size; and
+- **operating point:** precision/recall at the F1-maximizing score threshold on
+  held-out rings — the number an investigator would actually deploy with.
 
 ### Current benchmark results
 
@@ -302,6 +311,33 @@ numbers may vary slightly between runs.
 Full results are in [`results/benchmark.json`](results/benchmark.json). The
 important comparison is the trend: as the synthetic fraud becomes harder,
 Random Forest loses ranking quality while GraphSAGE retains a positive signal.
+
+### Experiment: cycle-count features (triangle counts + clustering)
+
+Hypothesis from the roadmap: a 2-layer GNN cannot distinguish a 6-cycle ring
+from a chain (both look like degree-2 neighborhoods), so explicit cycle counts
+might add signal. The experiment ran the same benchmark with `--cycle-counts`
+(10k accounts, 50 rings, 10 held out; full results in
+`bench-cc/results/benchmark.json`):
+
+| Hardness | Model | AUC without | AUC with | Δ |
+| --- | --- | ---: | ---: | ---: |
+| low | GraphSAGE | 0.671 | 0.662 | −0.009 |
+| low | Random Forest | 0.607 | 0.602 | −0.005 |
+| medium | GraphSAGE | 0.638 | 0.620 | −0.018 |
+| medium | Random Forest | 0.520 | 0.526 | +0.006 |
+| high | GraphSAGE | 0.630 | 0.614 | −0.016 |
+| high | Random Forest | 0.495 | 0.537 | +0.042 |
+
+**Verdict: the features did not help the GNN** (AUC fell at every hardness),
+and helped Random Forest only marginally at high hardness. Ring structure on
+this data contains triangles (32% of ring nodes vs 24% of normal nodes), but
+the overlap is large enough that triangle counts mostly add noise for a model
+that already aggregates neighborhoods. The flag remains available
+(`--cycle-counts`) and the implementation is tested; the negative result is
+reported rather than tuned away. A more promising structural direction is
+outlined in [issue #3](https://github.com/sohamvjadhav/Mule-Hunt/issues/3)
+(transaction-level labels).
 
 ## Risk API
 

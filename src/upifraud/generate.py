@@ -17,7 +17,14 @@ def run_gen_fraud_graph(
     workers: int = 2,
     hardness: str = "low",
 ) -> None:
-    from gen_fraud_graph import Config, FraudGraphGenerator
+    try:
+        from gen_fraud_graph import Config, FraudGraphGenerator
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "the synthetic generator is a git dependency and is not included "
+            "with the PyPI package; install it with:\n"
+            '  pip install "gen-fraud-graph @ git+https://github.com/SantanderAI/gen-fraud-graph.git"'
+        ) from e
 
     config = Config(
         scale_factor=scale,
@@ -102,6 +109,21 @@ def generate_toy(
                 }
             )
             next_tx += 1
+        if ring_idx % 2 == 0:
+            for i in range(2):
+                src = members[i]
+                dst = members[(i + 2) % size]
+                fraud_tx_rows.append(
+                    {
+                        "tx_id": f"tx_{next_tx}",
+                        "src_id": src,
+                        "dst_id": dst,
+                        "amount": FRAUD_AMOUNT,
+                        "timestamp": f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d} {rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}",
+                        "description": "SUSPICIOUS SPLIT",
+                    }
+                )
+                next_tx += 1
         for _ in range(size):
             src = rng.choice(members)
             dst = rng.choice([a for a in account_ids if a not in members])
