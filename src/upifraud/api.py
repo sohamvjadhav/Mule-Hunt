@@ -261,8 +261,85 @@ def create_app(
             ],
         }
 
-    def _local_explanation(ctx: dict) -> str:
+    def _explainer_facts(idx: int) -> dict:
+        """Model-grounded evidence: which features and which neighbors drive
+        the risk score, via GNNExplainer on the account's 2-hop neighborhood
+        (capped for dashboard latency). Empty dict if it cannot be computed.
+        """
+        from torch_geometric.explain import Explainer, GNNExplainer, ModelConfig
+
+        n = data.num_nodes
+        hop = torch.zeros(n, dtype=torch.bool)
+        hop[idx] = True
+        frontier = {idx}
+        for _ in range(2):
+            nxt: set[int] = set()
+            for u in frontier:
+                nbr = torch.nonzero((data.edge_index[0] == u) | (data.edge_index[1] == u)).flatten()
+                nxt.update(int(v) for v in data.edge_index[:, nbr].unique())
+            frontier |= nxt
+            if len(frontier) > 512:
+                break
+        sub = sorted(frontier)
+        sub_map = {u: i for i, u in enumerate(sub)}
+        in_sub = torch.tensor([s in sub_map for s in data.edge_index[0].tolist()]) & torch.tensor(
+            [s in sub_map for s in data.edge_index[1].tolist()]
+        )
+        edges = data.edge_index[:, in_sub]
+        eidx = torch.stack(
+            [torch.tensor([sub_map[int(u)] for u in edges[0]]), torch.tensor([sub_map[int(u)] for u in edges[1]])]
+        )
+
+        class _Wrapper(torch.nn.Module):
+            def __init__(self, m):
+                super().__init__()
+                self.m = m
+
+            def forward(self, x, edge_index):
+                return self.m(x, edge_index).unsqueeze(-1)
+
+        explainer = Explainer(
+            model=_Wrapper(model),
+            algorithm=GNNExplainer(epochs=60, lr=0.01),
+            explanation_type="model",
+            node_mask_type="attributes",
+            edge_mask_type="object",
+            model_config=ModelConfig(mode="binary_classification", task_level="node", return_type="raw"),
+        )
+        x_sub = x[torch.tensor(sub)]
+        ex = explainer(x_sub, eidx, index=sub_map[idx])
+        feat_imp = ex.node_mask[sub_map[idx]].abs().tolist()
+        names = getattr(data, "feature_names", None) or [f"f{i}" for i in range(len(feat_imp))]
+        top_feat = sorted(zip(names, feat_imp), key=lambda t: -t[1])[:3]
+        edge_imp = ex.edge_mask.tolist()
+        touches = (edges[0] == idx) | (edges[1] == idx)
+        neighbor_ids = [int(edges[1][e]) if int(edges[0][e]) == idx else int(edges[0][e]) for e in touches.nonzero().flatten()]
+        top_edge = sorted(zip(neighbor_ids, [edge_imp[i] for i in touches.nonzero().flatten().tolist()]), key=lambda t: -t[1])[:3]
+        return {
+            "top_features": [{"feature": f, "importance": round(v, 3)} for f, v in top_feat if v > 0.01],
+            "top_neighbors": [
+                {
+                    "account_id": idx_to_id[e],
+                    "edge_importance": round(v, 3),
+                    "risk_score": round(float(scores[e]), 3),
+                }
+                for e, v in top_edge
+                if v > 0.01
+            ],
+            "explained_nodes": len(sub),
+        }
+
+    def _local_explanation(ctx: dict, evidence: dict | None = None) -> str:
         parts = []
+        if evidence and evidence.get("top_features"):
+            feats = " and ".join(f["feature"] for f in evidence["top_features"][:2])
+            parts.append(f"is driven mainly by its {feats} features")
+        if evidence and evidence.get("top_neighbors"):
+            nb = evidence["top_neighbors"][0]
+            parts.append(
+                f"is most strongly influenced by neighbor {nb['account_id']} "
+                f"(model edge importance {nb['edge_importance']:.2f})"
+            )
         if ctx["ring_member"]:
             parts.append(
                 f"belongs to a known fraud ring (ring {ctx['ring_id']}); ring members "
@@ -287,14 +364,15 @@ def create_app(
             f"It {detail}."
         )
 
-    def _openai_explanation(ctx: dict) -> str:
+    def _openai_explanation(ctx: dict, evidence: dict | None = None) -> str:
         key = os.environ.get("OPENAI_API_KEY", "")
         if not key:
             return ""
         prompt = (
             "You are an AML risk analyst writing a short narrative for a "
             "suspicious-transaction report. Explain the risk of this payment "
-            f"account in 2-3 plain sentences, non-technical: {json.dumps(ctx)}"
+            "account in 2-3 plain sentences, non-technical: "
+            f"{json.dumps({'context': ctx, 'model_evidence': evidence or {}})}"
         )
         resp = httpx.post(
             "https://api.openai.com/v1/chat/completions",
@@ -318,14 +396,31 @@ def create_app(
         idx = id_to_idx.get(account_id)
         if idx is None:
             raise HTTPException(status_code=404, detail=f"unknown account {account_id}")
+        try:
+            evidence = _explainer_facts(idx)
+        except (RuntimeError, ValueError, TypeError, IndexError):
+            import traceback
+
+            traceback.print_exc()
+            evidence = {}
         ctx = _context(idx)
         try:
-            text = _openai_explanation(ctx)
+            text = _openai_explanation(ctx, evidence)
         except (httpx.HTTPError, KeyError, IndexError, ValueError):
             text = ""
         if text:
-            return {"account_id": account_id, "source": "openai", "explanation": text}
-        return {"account_id": account_id, "source": "local", "explanation": _local_explanation(ctx)}
+            return {
+                "account_id": account_id,
+                "source": "openai",
+                "explanation": text,
+                "model_evidence": evidence,
+            }
+        return {
+            "account_id": account_id,
+            "source": "local",
+            "explanation": _local_explanation(ctx, evidence),
+            "model_evidence": evidence,
+        }
 
     if frontend_dir is not None and frontend_dir.is_dir():
         app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="dashboard")

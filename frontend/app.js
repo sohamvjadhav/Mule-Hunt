@@ -106,6 +106,15 @@ async function loadAccount(accountId) {
     try {
       const e = await getJSON(`/api/explain/${encodeURIComponent(a.account_id)}`);
       text.textContent = e.explanation;
+      const ev = e.model_evidence;
+      if (ev && ev.top_features && ev.top_features.length) {
+        const feats = ev.top_features.map((f) => f.feature).join(", ");
+        const nb = ev.top_neighbors && ev.top_neighbors[0] ? `; top neighbor ${ev.top_neighbors[0].account_id}` : "";
+        text.insertAdjacentHTML(
+          "afterend",
+          `<p class="muted evidence-note">model drivers: ${feats}${nb}</p>`
+        );
+      }
       if (e.source === "openai") {
         text.insertAdjacentHTML(
           "afterend",

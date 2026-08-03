@@ -96,5 +96,6 @@ def test_explain_fallback_local(tmp_path, monkeypatch):
     body = resp.json()
     assert body["source"] == "local"
     assert len(body["explanation"]) > 20
+    assert isinstance(body["model_evidence"], dict)
 
     assert client.get("/api/explain/nope").status_code == 404
