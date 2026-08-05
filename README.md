@@ -469,18 +469,22 @@ workflow.
 - **Synthetic data:** benchmark behavior may not transfer to production payment
   networks.
 - **Node-level labels:** the current target is ring membership; transaction-level
-  classification is not implemented yet.
-- **Two message-passing layers:** the current GCN and GraphSAGE models have a
+  classification is not implemented yet
+  ([issue #3](https://github.com/sohamvjadhav/Mule-Hunt/issues/3)).
+- **Two message-passing layers:** the current GNNs (GCN, GraphSAGE, GATv2) have a
   limited receptive field for long or indirect rings.
-- **Cold-start accounts:** new accounts with little graph history need a
-  separate fallback strategy.
-- **No monitoring loop:** drift detection, threshold calibration, and feedback
-  from investigators are outside the current service.
+- **Cold-start is handled by a fallback:** accounts with little graph history
+  (combined degree below `--cold-start-threshold`, default 10) are scored by a
+  class-balanced gradient-boosted tabular model instead of the GNN.
+- **Monitoring is partial:** the service reports PSI drift between train and
+  test score distributions (`/api/drift`) and a calibrated operating point, but
+  investigator feedback loops are not implemented.
 - **Unused text/embeddings:** generated descriptions and embeddings are not yet
   consumed by the model.
 
-Planned directions include temporal and edge-level modeling, explicit cycle and
-flow features, cold-start handling, and production-style drift monitoring.
+Planned directions include temporal and edge-level modeling, transaction-level
+labels, adversarial-robustness tests, counterfactual explanations, and scaling
+the benchmark to larger graphs.
 
 ## License
 
