@@ -92,3 +92,37 @@ def drop_constant_columns(x: torch.Tensor) -> tuple[torch.Tensor, list[int]]:
     std = x.std(dim=0)
     keep = (std > 1e-8).nonzero().flatten().tolist()
     return x[:, keep], keep
+
+
+def build_edge_features(
+    tx_df: pd.DataFrame,
+    accounts_df: pd.DataFrame,
+    tx_ids: list[str],
+) -> tuple[torch.Tensor, list[str]]:
+    """Per-transaction features, aligned with the given tx_id order.
+
+    Features: log amount, hour-of-day (sin/cos), and log hours between the
+    transaction and the sender account's creation date. The amount is the
+    single most predictive signal on synthetic data (the generator encodes
+    ring edges with a distinctive amount), so structural signal must come
+    from the node-embedding side of the edge head.
+    """
+    sub = tx_df.set_index("tx_id").loc[tx_ids]
+    amt = np.log1p(sub["amount"].to_numpy(dtype=float))
+
+    ts = pd.to_datetime(sub["timestamp"])
+    hour = ts.dt.hour.to_numpy(dtype=float)
+    hour_sin = np.sin(2.0 * np.pi * hour / 24.0)
+    hour_cos = np.cos(2.0 * np.pi * hour / 24.0)
+
+    created = pd.to_datetime(
+        accounts_df.set_index("account_id").loc[sub["src_id"].to_numpy(), "creation_date"]
+    ).to_numpy()
+    since_hours = (ts.to_numpy() - created) / pd.Timedelta(hours=1)
+    since_hours = np.nan_to_num(since_hours, nan=0.0, posinf=0.0)
+    since_log = np.log1p(np.clip(since_hours, 0.0, None))
+
+    return (
+        torch.tensor(np.stack([amt, hour_sin, hour_cos, since_log], axis=1), dtype=torch.float32),
+        ["amount_log", "hour_sin", "hour_cos", "since_creation_log"],
+    )

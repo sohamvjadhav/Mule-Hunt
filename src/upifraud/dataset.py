@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 from torch_geometric.data import Data
 
-from .features import build_node_features, drop_constant_columns
+from .features import build_edge_features, build_node_features, drop_constant_columns
 
 
 def load_graph(
@@ -24,7 +24,8 @@ def load_graph(
     """Load gen-fraud-graph CSVs into a single PyG Data object.
 
     Node label: 1 if the account belongs to a planted fraud ring.
-    Edge labels are stored for completeness (future edge-level tasks).
+    Edge label: 1 if the transaction was flagged in the fraud CSV and both
+    endpoints belong to the same planted ring.
     """
     rng = random.Random(seed)
     account_files = sorted((data_dir / "accounts").glob("accounts_*.csv"))
@@ -92,9 +93,17 @@ def load_graph(
             if aid in id_to_idx:
                 ring_id[id_to_idx[aid]] = i
 
+    src_r = ring_id[edge_index[0]]
+    dst_r = ring_id[edge_index[1]]
+    same_ring = (src_r >= 0) & (src_r == dst_r)
+    edge_labels = edge_labels & same_ring
+
+    edge_attr, edge_feature_names = build_edge_features(tx, accounts, list(edges["tx_id"]))
+
     data = Data(
         x=x,
         edge_index=edge_index,
+        edge_attr=edge_attr,
         y=y,
         edge_label=edge_labels,
         ring_id=ring_id,
@@ -102,6 +111,8 @@ def load_graph(
     )
     data.node_ids = list(accounts["account_id"])
     data.feature_names = feature_names
+    data.edge_feature_names = edge_feature_names
+    data.edge_amounts = edge_amounts
     data.x_raw = x_full
     data.cold_start_feature_names = [
         "balance", "risk_score", "age_days"
@@ -116,7 +127,21 @@ def load_graph(
         _ring_aware_split(data, rng, test_rings, val_frac)
     else:
         _random_split(data, rng, val_frac)
+    _edge_masks(data)
     return data
+
+
+def _edge_masks(data: Data) -> None:
+    """Edge-level split masks derived from the endpoints' node masks.
+
+    An edge belongs to the training split only when both endpoints do, so
+    held-out rings never contribute edges to training. Edges touching nodes
+    across splits are excluded from loss and evaluation.
+    """
+    src, dst = data.edge_index
+    data.edge_train = data.train_mask[src] & data.train_mask[dst]
+    data.edge_val = data.val_mask[src] & data.val_mask[dst]
+    data.edge_test = data.test_mask[src] & data.test_mask[dst]
 
 
 def _ring_aware_split(data: Data, rng: random.Random, test_rings: int, val_frac: float) -> None:

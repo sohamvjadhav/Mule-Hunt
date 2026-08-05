@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 from torch_geometric.data import Data
 
 
@@ -101,3 +102,22 @@ def top_fraud_accounts(data: Data, scores: np.ndarray, k: int = 20) -> list[dict
             }
         )
     return out
+
+
+def evaluate_edges(data: Data, edge_scores: np.ndarray, split: str = "test") -> dict:
+    """AUC/AP/brier over held-out transactions (the edge-level counterpart of
+    the node evaluation). Uses the edge_<split> masks derived from endpoints.
+    """
+    mask = getattr(data, f"edge_{split}").numpy()
+    y = data.edge_label.numpy()[mask]
+    s = edge_scores[mask]
+    n_pos = int(y.sum())
+    out = {"n_pos": n_pos, "n_total": len(y)}
+    if len(y) == 0 or n_pos == 0 or n_pos == len(y):
+        return {**out, "auc": None, "ap": None, "brier": None}
+    return {
+        **out,
+        "auc": float(roc_auc_score(y, s)),
+        "ap": float(average_precision_score(y, s)),
+        "brier": float(brier_score_loss(y, s)),
+    }

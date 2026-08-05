@@ -67,9 +67,22 @@ def create_app(
     std = torch.tensor(args["std"])
     x, _, _ = standardize(data.x, mean, std)
 
-    model = build_model(args["model"], int(args["in_dim"]), int(args["hidden"]))
+    model = build_model(
+        args["model"], int(args["in_dim"]), int(args["hidden"]),
+        num_layers=int(args.get("num_layers", 2)),
+        jk=args.get("jk", "cat"),
+        edge_attr_dim=args.get("edge_attr_dim"),
+    )
     model.load_state_dict(state)
     model.eval()
+
+    edge_scores = None
+    if getattr(model, "edge_head", None) is not None and getattr(data, "edge_attr", None) is not None:
+        em = torch.tensor(args.get("edge_attr_mean"))
+        es = torch.tensor(args.get("edge_attr_std"))
+        eattr, _, _ = standardize(data.edge_attr.to(torch.float32), em, es)
+        with torch.no_grad():
+            edge_scores = model.edge_forward(x, data.edge_index, eattr).sigmoid().numpy().astype(float)
 
     calibrator = None
     calib_path = checkpoint_dir / f"{checkpoint.stem}_calib.pkl"
@@ -106,7 +119,7 @@ def create_app(
 
     degree = np.bincount(np.concatenate([src, dst]), minlength=data.num_nodes)
 
-    app = FastAPI(title="Mule-Hunt Risk API", version="0.2.0")
+    app = FastAPI(title="Mule-Hunt Risk API", version="0.3.0")
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -114,6 +127,7 @@ def create_app(
             "status": "ok",
             "model": args["model"],
             "nodes": int(data.num_nodes),
+            "num_layers": int(args.get("num_layers", 2)),
             "calibrator": args.get("calibrator"),
             "brier_val_after": args.get("brier_val_after"),
             "cold_start_threshold": cold_start_threshold,
@@ -205,6 +219,8 @@ def create_app(
             "fraud_rate": round(float(y.mean()), 5),
             "n_rings": int(data.num_rings),
             "model": args["model"],
+            "num_layers": int(args.get("num_layers", 2)),
+            "edge_attr_dim": args.get("edge_attr_dim"),
             "explainer": "openai" if os.environ.get("OPENAI_API_KEY") else "local",
             "calibrator": args.get("calibrator"),
             "brier_val_after": args.get("brier_val_after"),
@@ -276,14 +292,24 @@ def create_app(
         member_set = set(members)
         edges = []
         ext = np.zeros(len(members), dtype=int)
+        transactions = []
         for i in range(n_edges):
             a, b = int(src[i]), int(dst[i])
             if a in member_set and b in member_set:
                 edges.append([members.index(a), members.index(b)])
+                tx = {
+                    "src": members.index(a),
+                    "dst": members.index(b),
+                    "amount": round(float(data.edge_amounts[i]), 2),
+                    "risk_score": round(float(edge_scores[i]), 4) if edge_scores is not None else None,
+                    "label": int(data.edge_label[i]),
+                }
+                transactions.append(tx)
             elif a in member_set:
                 ext[members.index(a)] += 1
             elif b in member_set:
                 ext[members.index(b)] += 1
+        transactions.sort(key=lambda t: -(t["risk_score"] or 0.0))
         return {
             "ring_id": ring_id,
             "size": len(members),
@@ -300,6 +326,7 @@ def create_app(
                 for j, m in enumerate(members)
             ],
             "edges": edges,
+            "transactions": transactions,
         }
 
     @app.get("/api/distribution")
