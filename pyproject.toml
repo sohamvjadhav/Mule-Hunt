@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "upi-fraud-gnn"
+name = "mule-hunt"
 version = "0.3.0"
 description = "Graph-neural-network fraud detection for UPI-style payment graphs"
 readme = "README.md"
