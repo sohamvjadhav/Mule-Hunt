@@ -70,8 +70,31 @@ def create_app(
     model = build_model(args["model"], int(args["in_dim"]), int(args["hidden"]))
     model.load_state_dict(state)
     model.eval()
+
+    calibrator = None
+    calib_path = checkpoint_dir / f"{checkpoint.stem}_calib.pkl"
+    if calib_path.exists():
+        import pickle
+
+        with calib_path.open("rb") as f:
+            calibrator = pickle.load(f)
+
+    cold_start = None
+    cs_path = checkpoint_dir / f"{checkpoint.stem}_coldstart.joblib"
+    cold_start_threshold = 0
+    if cs_path.exists() and (args.get("cold_start") if isinstance(args, dict) else True):
+        import joblib
+
+        cold_start = joblib.load(cs_path)
+        cold_start_meta = (args.get("cold_start") or {}) if isinstance(args, dict) else {}
+        cold_start_threshold = int(cold_start_meta.get("threshold", 3))
+
     with torch.no_grad():
-        scores = model(x, data.edge_index).sigmoid().numpy()
+        raw_probs = model(x, data.edge_index).sigmoid().numpy()
+    if calibrator is not None:
+        scores = calibrator.predict(raw_probs).astype(float)
+    else:
+        scores = raw_probs.astype(float)
     order = np.argsort(-scores)
     rank_map = {int(i): r for r, i in enumerate(order)}
 
@@ -83,11 +106,52 @@ def create_app(
 
     degree = np.bincount(np.concatenate([src, dst]), minlength=data.num_nodes)
 
-    app = FastAPI(title="Mule-Hunt Risk API", version="0.1.0")
+    app = FastAPI(title="Mule-Hunt Risk API", version="0.2.0")
 
     @app.get("/healthz")
     def healthz() -> dict:
-        return {"status": "ok", "model": args["model"], "nodes": int(data.num_nodes)}
+        return {
+            "status": "ok",
+            "model": args["model"],
+            "nodes": int(data.num_nodes),
+            "calibrator": args.get("calibrator"),
+            "brier_val_after": args.get("brier_val_after"),
+            "cold_start_threshold": cold_start_threshold,
+        }
+
+    @app.get("/api/drift")
+    def drift(bins: int = 10) -> dict:
+        """Population Stability Index between training-set and test-set risk
+        scores. PSI < 0.1 is stable, 0.1–0.25 minor drift, > 0.25 major drift.
+        Computed over the calibrated scores; falls back to raw sigmoid if no
+        calibrator is loaded.
+        """
+        if bins < 4 or bins > 50:
+            raise HTTPException(status_code=400, detail="bins must be 4..50")
+        edges = np.linspace(0.0, 1.0, bins + 1)
+        edges[0], edges[-1] = -1e-9, 1.0 + 1e-9
+        train_s = scores[data.train_mask.numpy()]
+        test_s = scores[data.test_mask.numpy()]
+        train_counts, _ = np.histogram(train_s, bins=edges)
+        test_counts, _ = np.histogram(test_s, bins=edges)
+        train_p = (train_counts + 0.5) / (train_counts.sum() + 0.5 * len(train_counts))
+        test_p = (test_counts + 0.5) / (test_counts.sum() + 0.5 * len(test_counts))
+        psi = float(((train_p - test_p) * np.log(train_p / test_p)).sum())
+        if psi < 0.1:
+            verdict = "stable"
+        elif psi < 0.25:
+            verdict = "minor_drift"
+        else:
+            verdict = "major_drift"
+        return {
+            "metric": "PSI",
+            "psi": round(psi, 4),
+            "verdict": verdict,
+            "bins": bins,
+            "train_size": int(train_counts.sum()),
+            "test_size": int(test_counts.sum()),
+            "calibrator": bool(calibrator is not None),
+        }
 
     @app.get("/risk/account/{account_id}", response_model=RiskResponse)
     def risk_account(account_id: str) -> RiskResponse:
@@ -110,6 +174,17 @@ def create_app(
         return out
 
     def _risk_response(idx: int) -> RiskResponse:
+        if cold_start is not None and int(degree[idx]) < cold_start_threshold:
+            cs_idx = (args.get("cold_start") or {}).get("indices") if isinstance(args, dict) else None
+            if cs_idx and getattr(data, "x_raw", None) is not None:
+                cs_x = data.x_raw[idx, cs_idx].numpy().reshape(1, -1)
+                prob = float(cold_start.predict_proba(cs_x)[0, 1])
+                return RiskResponse(
+                    account_id=idx_to_id[idx],
+                    risk_score=round(prob, 4),
+                    risk_band=band(prob),
+                    rank=int(rank_map[idx]),
+                )
         return RiskResponse(
             account_id=idx_to_id[idx],
             risk_score=round(float(scores[idx]), 4),
@@ -131,6 +206,9 @@ def create_app(
             "n_rings": int(data.num_rings),
             "model": args["model"],
             "explainer": "openai" if os.environ.get("OPENAI_API_KEY") else "local",
+            "calibrator": args.get("calibrator"),
+            "brier_val_after": args.get("brier_val_after"),
+            "cold_start_threshold": cold_start_threshold,
             "ring_sizes": {k: v for k, v in sorted(ring_counts.items()) if k >= 0},
         }
 

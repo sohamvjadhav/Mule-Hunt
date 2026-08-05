@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from torch_geometric.nn import GCNConv, SAGEConv
+from torch_geometric.nn import GATv2Conv, GCNConv, SAGEConv
 
 
 class GCN(nn.Module):
@@ -39,7 +39,30 @@ class GraphSAGE(nn.Module):
         return self.cls(x).squeeze(-1)
 
 
-MODELS = {"gcn": GCN, "sage": GraphSAGE}
+class GATv2(nn.Module):
+    def __init__(
+        self,
+        in_dim: int,
+        hidden: int = 64,
+        dropout: float = 0.5,
+        heads: int = 4,
+    ):
+        super().__init__()
+        self.conv1 = GATv2Conv(in_dim, hidden, heads=heads, dropout=dropout, concat=True)
+        self.conv2 = GATv2Conv(
+            hidden * heads, hidden, heads=1, concat=False, dropout=dropout
+        )
+        self.cls = nn.Linear(hidden, 1)
+        self.drop = nn.Dropout(dropout)
+        self.act = nn.ELU()
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        x = self.drop(self.act(self.conv1(x, edge_index)))
+        x = self.act(self.conv2(x, edge_index))
+        return self.cls(x).squeeze(-1)
+
+
+MODELS = {"gcn": GCN, "sage": GraphSAGE, "gat": GATv2}
 
 
 def build_model(name: str, in_dim: int, hidden: int = 64, dropout: float = 0.5) -> nn.Module:
