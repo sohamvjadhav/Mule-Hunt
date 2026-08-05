@@ -63,10 +63,16 @@ def cmd_train_gnn(args) -> None:
         out_dir=out,
         calibrate=args.calibrate,
         cold_start_threshold=args.cold_start_threshold,
+        num_layers=args.num_layers,
+        jk=args.jk,
+        edge_loss_weight=args.edge_loss_weight,
     )
     eval_ = evaluate_gnn(data, result["scores"], split="test")
     rec = ring_recovery(data, result["scores"], split="test")
-    print(json.dumps({"model": args.model, "test": eval_, "ring_recovery": rec}, indent=2))
+    out_dict = {"model": args.model, "test": eval_, "ring_recovery": rec}
+    if result["edge_eval"] is not None:
+        out_dict["edge_test"] = result["edge_eval"]
+    print(json.dumps(out_dict, indent=2))
     torch.save(data, out / "graph.pt")
 
 
@@ -112,12 +118,23 @@ def cmd_evaluate(args) -> None:
             from .models import build_model
             from .train import standardize
 
-            model = build_model(name, int(args_["in_dim"]), int(args_["hidden"]))
+            model = build_model(
+                name, int(args_["in_dim"]), int(args_["hidden"]),
+                num_layers=int(args_.get("num_layers", 2)),
+                jk=args_.get("jk", "cat"),
+                edge_attr_dim=args_.get("edge_attr_dim"),
+            )
             model.load_state_dict(torch.load(ckpt, map_location="cpu"))
             model.eval()
             x, _, _ = standardize(data.x, torch.tensor(args_["mean"]), torch.tensor(args_["std"]))
             with torch.no_grad():
                 scores = model(x, data.edge_index).sigmoid().numpy()
+            calib_path = out / f"{name}_calib.pkl"
+            if calib_path.exists():
+                import pickle
+
+                with calib_path.open("rb") as f:
+                    scores = pickle.load(f).predict(scores).astype(float)
         eval_ = evaluate_gnn(data, scores, split="test") if name in ("gcn", "sage", "gat") else evaluate_baseline(data, scores, split="test")
         rec = ring_recovery(data, scores, split="test")
         rows.append(
@@ -159,6 +176,7 @@ def cmd_demo(args) -> None:
         amount_stats=args.amount_stats, cycle_counts=args.cycle_counts,
         split="rings", test_rings=args.test_rings,
         calibrate=args.calibrate, cold_start_threshold=args.cold_start_threshold,
+        num_layers=args.num_layers, jk=args.jk, edge_loss_weight=args.edge_loss_weight,
     ))
     print("== training baselines ==")
     for base in ("rf", "hgb"):
@@ -219,14 +237,18 @@ def cmd_benchmark(args) -> None:
         gnn = train_gnn(
             data, model_name=args.model, hidden=args.hidden, epochs=args.epochs,
             lr=args.lr, patience=args.patience, seed=args.seed, out_dir=out,
+            calibrate=args.calibrate, cold_start_threshold=args.cold_start_threshold,
+            num_layers=args.num_layers, jk=args.jk, edge_loss_weight=args.edge_loss_weight,
         )
         rows = []
         gnn_test = evaluate_gnn(data, gnn["scores"], split="test")
         gnn_ring = ring_recovery(data, gnn["scores"], split="test")
+        edge_auc = gnn["edge_eval"]["auc"] if gnn["edge_eval"] else None
         rows.append({
-            "hardness": hardness, "model": args.model,
+            "hardness": hardness, "model": args.model, "num_layers": args.num_layers,
             "auc": gnn_test["auc"], "ap": gnn_test["ap"],
             "mean_ring_recall": gnn_ring["mean_ring_recall"],
+            "edge_auc": edge_auc,
         })
         torch.save(data, out / "graph.pt")
         for base in args.baselines:
@@ -234,13 +256,15 @@ def cmd_benchmark(args) -> None:
             eval_ = evaluate_baseline(data, result["scores"], split="test")
             rec = ring_recovery(data, result["scores"], split="test")
             rows.append({
-                "hardness": hardness, "model": base,
+                "hardness": hardness, "model": base, "num_layers": None,
                 "auc": eval_["auc"], "ap": eval_["ap"],
                 "mean_ring_recall": rec["mean_ring_recall"],
+                "edge_auc": None,
             })
         for r in rows:
-            print(f"  {r['hardness']:<7} {r['model']:<4} auc={r['auc']:.3f} "
-                  f"ap={r['ap']:.3f} ring_recall={r['mean_ring_recall']:.3f}")
+            print(f"  {r['hardness']:<7} {r['model']:<4} layers={r['num_layers']} "
+                  f"auc={r['auc']:.3f} ap={r['ap']:.3f} "
+                  f"ring_recall={r['mean_ring_recall']:.3f} edge_auc={r['edge_auc']}")
         outcomes[hardness] = rows
     (results_dir / "benchmark.json").write_text(
         json.dumps(outcomes, indent=2, sort_keys=True)
@@ -279,6 +303,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--cold-start-threshold", type=int, default=10)
     p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
+    p.add_argument("--num-layers", type=int, default=2, help="message-passing depth (JK aggregates all layers)")
+    p.add_argument("--jk", choices=["cat", "max"], default="cat", help="jumping-knowledge aggregation")
+    p.add_argument("--edge-loss-weight", type=float, default=0.5, help="weight of the transaction-level loss term (0 disables the edge head)")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_train_gnn)
 
@@ -326,6 +353,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--cold-start-threshold", type=int, default=10)
     p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
+    p.add_argument("--num-layers", type=int, default=2, help="message-passing depth (JK aggregates all layers)")
+    p.add_argument("--jk", choices=["cat", "max"], default="cat", help="jumping-knowledge aggregation")
+    p.add_argument("--edge-loss-weight", type=float, default=0.5, help="weight of the transaction-level loss term (0 disables the edge head)")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_demo)
 
@@ -345,6 +375,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--cold-start-threshold", type=int, default=10)
     p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
+    p.add_argument("--num-layers", type=int, default=2, help="message-passing depth (JK aggregates all layers)")
+    p.add_argument("--jk", choices=["cat", "max"], default="cat", help="jumping-knowledge aggregation")
+    p.add_argument("--edge-loss-weight", type=float, default=0.5, help="weight of the transaction-level loss term (0 disables the edge head)")
     p.add_argument("--regenerate", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_benchmark)

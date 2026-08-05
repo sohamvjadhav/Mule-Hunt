@@ -142,6 +142,24 @@ async function loadRing(ringId) {
       </div>`
     )
     .join("");
+  const risky = (r.transactions || []).filter((t) => t.risk_score != null && t.risk_score >= 0.1);
+  if (risky.length) {
+    $("ring-list").insertAdjacentHTML(
+      "beforeend",
+      `<h4>suspicious transactions</h4>` +
+        risky
+          .slice(0, 5)
+          .map(
+            (t) => `
+        <div class="row">
+          <span class="k">a${t.src} → a${t.dst}</span>
+          <span>₹${fmt(t.amount)} · <b>${t.risk_score.toFixed(3)}</b></span>
+          ${t.label ? '<span class="tag tag-fraud">fraud</span>' : ""}
+        </div>`
+          )
+          .join("")
+    );
+  }
 }
 
 function drawRing(r) {
@@ -157,8 +175,14 @@ function drawRing(r) {
   });
 
   let inner = "";
+  const txnRisk = {};
+  for (const t of r.transactions || []) {
+    txnRisk[`${t.src},${t.dst}`] = t;
+  }
   for (const [a, b] of r.edges) {
-    inner += `<line class="edge" x1="${pos[a].x.toFixed(1)}" y1="${pos[a].y.toFixed(1)}" x2="${pos[b].x.toFixed(1)}" y2="${pos[b].y.toFixed(1)}" />`;
+    const t = txnRisk[`${a},${b}`] || { risk_score: 0 };
+    const stroke = t.risk_score >= 0.5 ? "#f87171" : t.risk_score >= 0.1 ? "#fbbf24" : "#333";
+    inner += `<line class="edge" stroke="${stroke}" x1="${pos[a].x.toFixed(1)}" y1="${pos[a].y.toFixed(1)}" x2="${pos[b].x.toFixed(1)}" y2="${pos[b].y.toFixed(1)}"><title>tx risk ${t.risk_score?.toFixed(3) ?? "n/a"} · ₹${(t.amount ?? 0).toLocaleString("en-IN")}</title></line>`;
   }
   for (const node of r.nodes) {
     const p = pos[node.index];

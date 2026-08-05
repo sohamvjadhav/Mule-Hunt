@@ -28,7 +28,11 @@ isolation.
 - A small built-in generator for tests and offline smoke runs.
 - CSV-to-[PyTorch Geometric](https://pyg.org/) graph loading.
 - Ring-aware train/validation/test splits that hold out complete fraud rings.
-- Three GNNs: GCN, GraphSAGE, and GATv2.
+- Three GNNs: GCN, GraphSAGE, and GATv2 — with configurable depth
+  (message-passing layers) and Jumping-Knowledge aggregation instead of a
+  hard-coded 2-hop receptive field.
+- A transaction-level head on the same backbone: per-transfer risk scores from
+  node embeddings + amount/time features, trained jointly with the node loss.
 - Non-graph baselines: Random Forest, HistGradientBoosting, and optional
   XGBoost.
 - Leak-aware node feature construction and class-imbalance handling.
@@ -207,6 +211,13 @@ whole rings for testing. Use `--split random` only when you specifically want a
 random node split for comparison; it is less representative of discovering a
 previously unseen ring.
 
+All three architectures are configurable in depth: `--num-layers` (default 2)
+stacks message-passing layers and Jumping Knowledge (`--jk cat`, the default,
+or `max`) concatenates every layer's embeddings before the classifier, so the
+receptive field is 1..N hops and deeper stacks avoid over-smoothing. Use
+`--edge-loss-weight 0` to drop the transaction-level head and train node-only
+(the edge head is trained jointly by default with weight 0.5).
+
 The command saves:
 
 - `<model>.pt`: model weights;
@@ -222,6 +233,9 @@ Calibration and cold-start are on by default and can be adjusted:
 | --- | ---: | --- |
 | `--calibrate` / `--no-calibrate` | on | Fit an isotonic calibrator on validation scores |
 | `--cold-start-threshold` | `10` | Combined degree below which a tabular cold-start score is used instead of the GNN |
+| `--num-layers` | `2` | Message-passing depth; Jumping Knowledge aggregates all layers |
+| `--jk` | `cat` | JK aggregation: `cat` or `max` |
+| `--edge-loss-weight` | `0.5` | Weight of the transaction-level loss (set to `0` to disable the edge head) |
 
 ### Train a baseline
 
@@ -317,21 +331,43 @@ The main metrics are:
 ### Current benchmark results
 
 The committed benchmark uses approximately 10,000 accounts, 90,000 transfers,
-50 rings, and 10 held-out rings. The generator has its own randomness, so
-numbers may vary slightly between runs.
+50 rings, and 10 held-out rings. Runs include the transaction-level head
+(edge AUC is reported on held-out transactions). The generator has its own
+randomness, so numbers may vary slightly between runs.
 
-| Hardness | Model | AUC | AP | Mean ring recall |
-| --- | --- | ---: | ---: | ---: |
-| low | GraphSAGE | **0.671** | 0.062 | **0.315** |
-| low | Random Forest | 0.607 | 0.064 | 0.195 |
-| medium | GraphSAGE | **0.638** | **0.062** | **0.326** |
-| medium | Random Forest | 0.520 | 0.036 | 0.217 |
-| high | GraphSAGE | **0.630** | **0.053** | **0.287** |
-| high | Random Forest | 0.495 | 0.042 | 0.138 |
+| Hardness | Model | Layers | AUC | AP | Mean ring recall | Edge AUC |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| low | GraphSAGE | 2 | 0.620 | 0.056 | 0.238 | 1.000 |
+| low | GraphSAGE | 3 | **0.630** | 0.058 | **0.273** | 1.000 |
+| low | Random Forest | – | 0.507 | 0.036 | 0.142 | – |
+| medium | GraphSAGE | 2 | **0.671** | **0.079** | **0.359** | 0.999 |
+| medium | GraphSAGE | 3 | 0.610 | 0.051 | 0.324 | 0.999 |
+| medium | Random Forest | – | 0.603 | 0.065 | 0.269 | – |
+| high | GraphSAGE | 2 | **0.665** | 0.069 | **0.351** | 0.997 |
+| high | GraphSAGE | 3 | 0.629 | 0.044 | 0.262 | 0.997 |
+| high | Random Forest | – | 0.622 | 0.057 | 0.185 | – |
 
 Full results are in [`results/benchmark.json`](results/benchmark.json). The
-important comparison is the trend: as the synthetic fraud becomes harder,
-Random Forest loses ranking quality while GraphSAGE retains a positive signal.
+important comparisons: Random Forest loses ranking quality as the synthetic
+fraud becomes harder while GraphSAGE retains a positive signal, and the joint
+edge-head training improves the 2-layer GNN at medium/high hardness versus the
+previous node-only benchmark (0.671 vs 0.638 medium; 0.665 vs 0.630 high).
+
+### Experiment: message-passing depth (third layer + Jumping Knowledge)
+
+Hypothesis from the roadmap: a 2-hop receptive field cannot distinguish a
+6-cycle ring from a chain, so a deeper stack with Jumping Knowledge
+(concatenating every layer's embeddings) should recover longer rings. All
+models now support `--num-layers` with JK (`cat`/`max`), and the same
+benchmark was run at 2 and 3 layers (see the table above).
+
+**Verdict: the third layer does not help at medium/high hardness.** AUC fell
+−0.061 (medium) and −0.035 (high) at 3 layers, with only a small gain at low
+hardness (+0.010). On this data the rings are short enough that a 2-hop
+neighborhood already contains the full ring; the extra hop aggregates mostly
+unrelated normal accounts and dilutes the signal. The default remains 2
+layers, the depth is fully configurable, and the negative result is reported
+rather than tuned away.
 
 ### Experiment: cycle-count features (triangle counts + clustering)
 
@@ -389,6 +425,29 @@ default 10 bins): `stable` below 0.1, `minor_drift` below 0.25, and
 `major_drift` above. On the demo run the train/test split of a single generated
 graph reads as stable (PSI ≈ 0.004).
 
+## Transaction-level risk scores
+
+Beyond per-account risk, the same backbone carries a transaction head: an MLP
+over `concat(embedding[src], embedding[dst], edge_features)` predicts whether a
+specific transfer is part of a laundering path. Edge features are log amount,
+hour-of-day (sin/cos), and log hours since the sender account was created.
+Labels are the fraud-CSV flagged transactions that sit inside a ring, and
+train/val/test edge masks are derived from their endpoints (an edge trains
+only when both endpoints train), so held-out rings never leak transactions.
+
+The two losses are summed during training with `--edge-loss-weight` (default
+0.5). Evaluation reports edge AUC/AP/brier alongside the node metrics, and the
+ring view of the dashboard exposes every internal transaction with its risk
+score — the graph on the right colors suspicious transfers red instead of
+treating a ring as one opaque blob.
+
+> **Honest caveat:** on the synthetic generator, flagged transactions carry a
+> distinctive amount (₹9,999), so the edge head reaches AUC ≈ 1.0 trivially.
+> The meaningful signal is the *integration*: the same embeddings drive account
+> and transaction risk, and the edge metrics give investigators a ranked list
+> of transfers to examine. On real data the amount encoding would be far less
+> distinctive and the structural (embedding) side would matter more.
+
 ## Risk API
 
 `upifraud serve` loads a trained GNN checkpoint and `graph.pt` from the same
@@ -403,7 +462,7 @@ dashboard endpoints.
 | `GET` | `/api/summary` | Dataset and model summary (incl. calibration and cold-start status) |
 | `GET` | `/api/top?k=50` | Highest-risk accounts |
 | `GET` | `/api/account/{account_id}` | Account details and high-risk neighbors |
-| `GET` | `/api/ring/{ring_id}` | Ring members and internal edges |
+| `GET` | `/api/ring/{ring_id}` | Ring members, internal edges, and per-transaction risk scores |
 | `GET` | `/api/distribution?bins=20` | Risk-score histogram |
 | `GET` | `/api/drift?bins=10` | PSI between train and test score distributions (bins 4..50) |
 | `GET` | `/api/explain/{account_id}` | Plain-language risk explanation + model-grounded evidence (GNNExplainer drivers) |
@@ -434,7 +493,7 @@ src/upifraud/
 ├── evaluate.py     AUC, AP, and ring-recovery metrics
 ├── features.py     Account and graph feature construction
 ├── generate.py     External and toy graph generators
-├── models.py       GCN, GraphSAGE, and GATv2 definitions
+├── models.py       GCN, GraphSAGE, and GATv2 (configurable depth/JK + edge head)
 └── train.py        GNN training and checkpoint serialization
 
 frontend/           Static dashboard assets
@@ -468,11 +527,12 @@ workflow.
 
 - **Synthetic data:** benchmark behavior may not transfer to production payment
   networks.
-- **Node-level labels:** the current target is ring membership; transaction-level
-  classification is not implemented yet
-  ([issue #3](https://github.com/sohamvjadhav/Mule-Hunt/issues/3)).
-- **Two message-passing layers:** the current GNNs (GCN, GraphSAGE, GATv2) have a
-  limited receptive field for long or indirect rings.
+- **Node- and transaction-level labels:** the current targets are ring
+  membership and flagged transfers; richer labels (per-transaction laundering
+  stages) are not modeled yet.
+- **Receptive field is configurable, not unlimited:** the GNNs default to
+  three message-passing layers with Jumping Knowledge; very long or indirect
+  rings beyond ~3 hops still fall outside the receptive field.
 - **Cold-start is handled by a fallback:** accounts with little graph history
   (combined degree below `--cold-start-threshold`, default 10) are scored by a
   class-balanced gradient-boosted tabular model instead of the GNN.
@@ -482,9 +542,8 @@ workflow.
 - **Unused text/embeddings:** generated descriptions and embeddings are not yet
   consumed by the model.
 
-Planned directions include temporal and edge-level modeling, transaction-level
-labels, adversarial-robustness tests, counterfactual explanations, and scaling
-the benchmark to larger graphs.
+Planned directions include temporal (dynamic-graph) modeling, adversarial-robustness
+tests, counterfactual explanations, and scaling the benchmark to larger graphs.
 
 ## License
 

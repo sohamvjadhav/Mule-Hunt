@@ -120,3 +120,87 @@ def test_summary_exposes_calibration_fields(tmp_path):
     assert body["calibrator"] == "isotonic"
     assert 0.0 <= body["brier_val_after"] <= 1.0
     assert body["cold_start_threshold"] == 10
+
+
+def test_depth_and_jk_shapes():
+    for name in ("gcn", "sage", "gat"):
+        for layers in (1, 2, 4):
+            m = build_model(name, in_dim=7, hidden=8, num_layers=layers)
+            x = torch.randn(10, 7)
+            e = torch.tensor([[0, 1, 2], [1, 2, 0]])
+            assert m(x, e).shape == (10,)
+            emb = m.embed(x, e)
+            expected = 8 * layers if layers > 1 else 8
+            assert emb.shape == (10, expected), (name, layers)
+
+
+def test_edge_head_shapes_and_optionality():
+    m = build_model("sage", in_dim=7, hidden=8, edge_attr_dim=4)
+    assert m.edge_head is not None
+    x = torch.randn(10, 7)
+    e = torch.tensor([[0, 1, 2], [1, 2, 0]])
+    ea = torch.randn(3, 4)
+    assert m.edge_forward(x, e, ea).shape == (3,)
+    assert torch.isfinite(m.edge_forward(x, e, ea)).all()
+
+    plain = build_model("sage", in_dim=7, hidden=8)
+    assert plain.edge_head is None
+
+
+def test_dataset_edge_features_and_masks(tmp_path):
+    data = _toy(tmp_path)
+    assert data.edge_attr.shape[1] == 4
+    assert data.edge_feature_names == ["amount_log", "hour_sin", "hour_cos", "since_creation_log"]
+    assert data.edge_train.dtype == torch.bool
+    assert data.edge_train.any() and data.edge_val.any() and data.edge_test.any()
+    e_pos = int(data.edge_label.sum())
+    assert e_pos > 0
+    same_ring = (data.ring_id[data.edge_index[0]] >= 0) & (
+        data.ring_id[data.edge_index[0]] == data.ring_id[data.edge_index[1]]
+    )
+    assert not (data.edge_label.bool() & ~same_ring).any()
+    assert int((data.edge_label.bool() & same_ring).sum()) == e_pos
+    assert int(data.edge_label[data.edge_test].sum()) > 0
+
+
+def test_edge_head_trains_and_reports_metrics(tmp_path):
+    data = _toy(tmp_path)
+    result = train_gnn(
+        data, model_name="sage", hidden=16, epochs=8, patience=3, seed=1,
+        out_dir=tmp_path, edge_loss_weight=1.0,
+    )
+    assert result["edge_scores"] is not None
+    assert len(result["edge_scores"]) == data.edge_index.size(1)
+    ev = result["edge_eval"]
+    assert ev is not None
+    assert ev["n_pos"] > 0 and ev["n_total"] > ev["n_pos"]
+    assert ev["auc"] is not None and 0.0 <= ev["auc"] <= 1.0
+    assert (tmp_path / "sage_args.json").exists()
+    args = result["args"]
+    assert args["num_layers"] == 3 and args["edge_attr_dim"] == 4
+    assert args["edge_attr_mean"] and args["edge_attr_std"]
+
+
+def test_edge_loss_can_be_disabled(tmp_path):
+    data = _toy(tmp_path)
+    result = train_gnn(
+        data, model_name="sage", hidden=16, epochs=8, patience=3, seed=1,
+        out_dir=tmp_path, edge_loss_weight=0.0,
+    )
+    assert result["edge_scores"] is None
+    assert result["edge_eval"] is None
+    assert result["args"]["edge_attr_dim"] is None
+
+
+def test_ring_endpoint_returns_transactions(tmp_path):
+    client, _ = _client(tmp_path)
+    ring = client.get("/api/ring/0").json()
+    assert len(ring["transactions"]) > 0
+    t = ring["transactions"][0]
+    assert set(t) >= {"src", "dst", "amount", "risk_score", "label"}
+    assert 0.0 <= t["amount"]
+    assert t["risk_score"] is None or 0.0 <= t["risk_score"] <= 1.0
+    assert t["label"] in (0, 1)
+    internal = [e for e in ring["edges"]]
+    assert (len(internal)) == len(ring["transactions"])
+    assert client.get("/api/ring/99").status_code == 404

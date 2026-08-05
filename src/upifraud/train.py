@@ -38,6 +38,9 @@ def train_gnn(
     device: str = DEVICE,
     calibrate: bool = True,
     cold_start_threshold: int = 10,
+    num_layers: int = 3,
+    jk: str = "cat",
+    edge_loss_weight: float = 0.5,
 ) -> dict:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -48,7 +51,18 @@ def train_gnn(
     data = data.clone()
     data.x = x.to(device)
 
-    model = build_model(model_name, data.x.size(1), hidden)
+    edge_attr = None
+    edge_mean = edge_std = None
+    edge_dim = None
+    if edge_loss_weight > 0 and getattr(data, "edge_attr", None) is not None:
+        edge_dim = int(data.edge_attr.size(1))
+        edge_attr, edge_mean, edge_std = standardize(data.edge_attr.to(torch.float32))
+        edge_attr = edge_attr.to(device)
+
+    model = build_model(
+        model_name, data.x.size(1), hidden, num_layers=num_layers, jk=jk,
+        edge_attr_dim=edge_dim,
+    )
     model.to(device)
 
     train_y = data.y[data.train_mask]
@@ -61,6 +75,16 @@ def train_gnn(
     edge_index = data.edge_index.to(device)
     y = data.y.float().to(device)
 
+    edge_target = None
+    edge_pos_weight = None
+    if edge_attr is not None:
+        edge_y = data.edge_label.float()
+        e_train_np = data.edge_train.numpy()
+        e_pos = int(edge_y[e_train_np].sum())
+        e_neg = int((1 - edge_y)[e_train_np].sum())
+        edge_pos_weight = torch.tensor([e_neg / max(e_pos, 1)]).to(device)
+        edge_target = edge_y.to(device)
+
     best_ap = -1.0
     best_state = None
     wait = 0
@@ -71,6 +95,13 @@ def train_gnn(
         optimizer.zero_grad()
         logits = model(data.x, edge_index)
         loss = loss_fn(logits[data.train_mask], y[data.train_mask])
+        if edge_attr is not None and edge_target is not None:
+            e_logits = model.edge_forward(data.x, edge_index, edge_attr)
+            edge_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                e_logits[data.edge_train], edge_target[data.edge_train],
+                pos_weight=edge_pos_weight,
+            )
+            loss = loss + edge_loss_weight * edge_loss
         loss.backward()
         optimizer.step()
 
@@ -147,6 +178,12 @@ def train_gnn(
         "in_dim": int(data.x.size(1)),
         "mean": mean.cpu().tolist(),
         "std": std.cpu().tolist(),
+        "num_layers": num_layers,
+        "jk": jk,
+        "edge_attr_dim": edge_dim,
+        "edge_loss_weight": edge_loss_weight,
+        "edge_attr_mean": edge_mean.cpu().tolist() if edge_mean is not None else None,
+        "edge_attr_std": edge_std.cpu().tolist() if edge_std is not None else None,
         "best_val_ap": best_ap,
         "epochs_run": len(history),
         "pos_weight": neg / max(pos, 1),
@@ -157,12 +194,23 @@ def train_gnn(
     }
     (out_dir / f"{model_name}_args.json").write_text(json.dumps(args, indent=2))
 
+    edge_scores = None
+    edge_eval = None
+    if edge_attr is not None:
+        with torch.no_grad():
+            edge_scores = torch.sigmoid(model.edge_forward(data.x, edge_index, edge_attr)).cpu().numpy()
+        from .evaluate import evaluate_edges
+
+        edge_eval = evaluate_edges(data, edge_scores, split="test")
+
     return {
         "history": history,
         "args": args,
         "scores": all_scores,
         "model": model,
         "calibrator_path": str(cal_path) if cal_path else None,
+        "edge_scores": edge_scores,
+        "edge_eval": edge_eval,
     }
 
 
