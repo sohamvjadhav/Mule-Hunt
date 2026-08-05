@@ -61,6 +61,8 @@ def cmd_train_gnn(args) -> None:
         patience=args.patience,
         seed=args.seed,
         out_dir=out,
+        calibrate=args.calibrate,
+        cold_start_threshold=args.cold_start_threshold,
     )
     eval_ = evaluate_gnn(data, result["scores"], split="test")
     rec = ring_recovery(data, result["scores"], split="test")
@@ -116,7 +118,7 @@ def cmd_evaluate(args) -> None:
             x, _, _ = standardize(data.x, torch.tensor(args_["mean"]), torch.tensor(args_["std"]))
             with torch.no_grad():
                 scores = model(x, data.edge_index).sigmoid().numpy()
-        eval_ = evaluate_gnn(data, scores, split="test") if name in ("gcn", "sage") else evaluate_baseline(data, scores, split="test")
+        eval_ = evaluate_gnn(data, scores, split="test") if name in ("gcn", "sage", "gat") else evaluate_baseline(data, scores, split="test")
         rec = ring_recovery(data, scores, split="test")
         rows.append(
             {
@@ -156,6 +158,7 @@ def cmd_demo(args) -> None:
         epochs=args.epochs, lr=args.lr, patience=args.patience, seed=args.seed,
         amount_stats=args.amount_stats, cycle_counts=args.cycle_counts,
         split="rings", test_rings=args.test_rings,
+        calibrate=args.calibrate, cold_start_threshold=args.cold_start_threshold,
     ))
     print("== training baselines ==")
     for base in ("rf", "hgb"):
@@ -265,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("train-gnn", help="train GCN/GraphSAGE")
     p.add_argument("--data", default="data/raw")
     p.add_argument("--out-dir", default="models")
-    p.add_argument("--model", choices=["gcn", "sage"], default="sage")
+    p.add_argument("--model", choices=["gcn", "sage", "gat"], default="sage")
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -273,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--split", choices=["rings", "random"], default="rings")
     p.add_argument("--test-rings", type=int, default=3)
     p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--cold-start-threshold", type=int, default=10)
     p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_train_gnn)
@@ -284,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--split", choices=["rings", "random"], default="rings")
     p.add_argument("--test-rings", type=int, default=3)
     p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--cold-start-threshold", type=int, default=10)
     p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_train_baseline)
@@ -309,13 +316,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--hardness", choices=["low", "medium", "high"], default="low")
     p.add_argument("--toy-accounts", type=int, default=300)
     p.add_argument("--toy-tx", type=int, default=2500)
-    p.add_argument("--model", choices=["gcn", "sage"], default="sage")
+    p.add_argument("--model", choices=["gcn", "sage", "gat"], default="sage")
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--test-rings", type=int, default=3)
     p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--cold-start-threshold", type=int, default=10)
     p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_demo)
@@ -325,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scale", type=float, default=0.001)
     p.add_argument("--rings", type=int, default=None)
     p.add_argument("--hardness", nargs="+", choices=["low", "medium", "high"], default=["low", "medium", "high"])
-    p.add_argument("--model", choices=["gcn", "sage"], default="sage")
+    p.add_argument("--model", choices=["gcn", "sage", "gat"], default="sage")
     p.add_argument("--baselines", nargs="+", choices=["rf", "hgb", "xgb"], default=["rf"])
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--epochs", type=int, default=200)
@@ -333,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--test-rings", type=int, default=3)
     p.add_argument("--amount-stats", action="store_true")
+    p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--cold-start-threshold", type=int, default=10)
     p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
     p.add_argument("--regenerate", action="store_true")
     p.add_argument("--seed", type=int, default=42)

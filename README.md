@@ -28,10 +28,15 @@ isolation.
 - A small built-in generator for tests and offline smoke runs.
 - CSV-to-[PyTorch Geometric](https://pyg.org/) graph loading.
 - Ring-aware train/validation/test splits that hold out complete fraud rings.
-- Two GNNs: GCN and GraphSAGE.
+- Three GNNs: GCN, GraphSAGE, and GATv2.
 - Non-graph baselines: Random Forest, HistGradientBoosting, and optional
   XGBoost.
 - Leak-aware node feature construction and class-imbalance handling.
+- Isotonic probability calibration with validation-brier reporting.
+- A cold-start fallback (gradient-boosted tabular model) for low-activity
+  accounts, whose neighborhoods are too small for a GNN to score.
+- Population-stability-index (PSI) drift monitoring between train and test
+  score distributions.
 - AUC, average precision, and whole-ring recovery metrics.
 - A FastAPI risk-scoring service with a lightweight dashboard.
 - Optional plain-language account explanations, with a deterministic local
@@ -197,16 +202,26 @@ upifraud train-gnn \
   --test-rings 3
 ```
 
-Available GNNs are `sage` and `gcn`. The default `rings` split holds out whole
-rings for testing. Use `--split random` only when you specifically want a
+Available GNNs are `sage`, `gcn`, and `gat`. The default `rings` split holds out
+whole rings for testing. Use `--split random` only when you specifically want a
 random node split for comparison; it is less representative of discovering a
 previously unseen ring.
 
 The command saves:
 
 - `<model>.pt`: model weights;
-- `<model>_args.json`: model dimensions and feature standardization values; and
+- `<model>_args.json`: model dimensions, feature standardization values,
+  validation brier before/after calibration, and cold-start metadata;
+- `<model>_calib.pkl`: isotonic calibrator fitted on validation scores;
+- `<model>_coldstart.joblib`: cold-start tabular model and metadata; and
 - `graph.pt`: the processed graph and its split masks.
+
+Calibration and cold-start are on by default and can be adjusted:
+
+| Option | Default | Description |
+| --- | ---: | --- |
+| `--calibrate` / `--no-calibrate` | on | Fit an isotonic calibrator on validation scores |
+| `--cold-start-threshold` | `10` | Combined degree below which a tabular cold-start score is used instead of the GNN |
 
 ### Train a baseline
 
@@ -345,6 +360,35 @@ reported rather than tuned away. A more promising structural direction is
 outlined in [issue #3](https://github.com/sohamvjadhav/Mule-Hunt/issues/3)
 (transaction-level labels).
 
+## Production hardening: calibration, cold-start, and drift
+
+Three mechanisms make the served scores more defensible in an operational
+setting.
+
+**Isotonic calibration.** GNN raw sigmoid outputs on this data are poorly
+calibrated (validation brier ~0.25). `train-gnn` fits an
+[isotonic regression](https://scikit-learn.org/stable/modules/generated/sklearn.isotonic.IsotonicRegression.html)
+on validation probabilities and applies it to every served score; the
+validation brier before/after is recorded in `<model>_args.json` (e.g.
+0.25 → 0.02 on the demo run). The `risk_score` in API responses is the
+calibrated probability.
+
+**Cold-start fallback.** Accounts with very few transactions (combined degree
+below `--cold-start-threshold`, default 10) have too little neighborhood
+structure for a GNN to score meaningfully. For those accounts the API routes to
+a class-balanced gradient-boosted tabular model trained on
+`balance`, `risk_score`, and `age_days` only, so a brand-new account still gets
+a principled score instead of a default. The cold-start model's training AUC
+and feature list are stored in the training metadata.
+
+**PSI drift monitoring.** The model is trained on one graph and served against
+data that will drift. `GET /api/drift` computes the
+[population stability index](https://www.lexjansen.com/nesug/nesug06/cc/cc07.pdf)
+between the train-mask and test-mask calibrated score distributions (smoothed,
+default 10 bins): `stable` below 0.1, `minor_drift` below 0.25, and
+`major_drift` above. On the demo run the train/test split of a single generated
+graph reads as stable (PSI ≈ 0.004).
+
 ## Risk API
 
 `upifraud serve` loads a trained GNN checkpoint and `graph.pt` from the same
@@ -353,14 +397,15 @@ dashboard endpoints.
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `GET` | `/healthz` | Service status, model name, and node count |
-| `GET` | `/risk/account/{account_id}` | Risk score for one account |
+| `GET` | `/healthz` | Service status, model name, calibration, and node count |
+| `GET` | `/risk/account/{account_id}` | Risk score for one account (cold-start fallback for low-activity accounts) |
 | `POST` | `/risk/batch` | Risk scores for multiple account IDs |
-| `GET` | `/api/summary` | Dataset and model summary |
+| `GET` | `/api/summary` | Dataset and model summary (incl. calibration and cold-start status) |
 | `GET` | `/api/top?k=50` | Highest-risk accounts |
 | `GET` | `/api/account/{account_id}` | Account details and high-risk neighbors |
 | `GET` | `/api/ring/{ring_id}` | Ring members and internal edges |
 | `GET` | `/api/distribution?bins=20` | Risk-score histogram |
+| `GET` | `/api/drift?bins=10` | PSI between train and test score distributions (bins 4..50) |
 | `GET` | `/api/explain/{account_id}` | Plain-language risk explanation + model-grounded evidence (GNNExplainer drivers) |
 
 Risk scores are in `[0, 1]` and mapped to bands as follows:
@@ -389,7 +434,7 @@ src/upifraud/
 ├── evaluate.py     AUC, AP, and ring-recovery metrics
 ├── features.py     Account and graph feature construction
 ├── generate.py     External and toy graph generators
-├── models.py       GCN and GraphSAGE definitions
+├── models.py       GCN, GraphSAGE, and GATv2 definitions
 └── train.py        GNN training and checkpoint serialization
 
 frontend/           Static dashboard assets

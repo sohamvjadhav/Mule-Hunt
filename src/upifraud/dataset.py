@@ -102,6 +102,15 @@ def load_graph(
     )
     data.node_ids = list(accounts["account_id"])
     data.feature_names = feature_names
+    data.x_raw = x_full
+    data.cold_start_feature_names = [
+        "balance", "risk_score", "age_days"
+    ]
+    data.cold_start_indices = [
+        base_names.index("balance"),
+        base_names.index("risk_score"),
+        base_names.index("age_days"),
+    ] if all(n in base_names for n in data.cold_start_feature_names) else [0, 1, 2] if len(base_names) >= 3 else None
 
     if split == "rings":
         _ring_aware_split(data, rng, test_rings, val_frac)
