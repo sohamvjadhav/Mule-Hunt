@@ -2,6 +2,7 @@ import pickle
 
 import joblib
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 from fastapi.testclient import TestClient
@@ -192,7 +193,63 @@ def test_edge_loss_can_be_disabled(tmp_path):
     assert result["args"]["edge_attr_dim"] is None
 
 
-def test_ring_endpoint_returns_transactions(tmp_path):
+def _write_minimal_graph(root, with_timestamp=False, with_creation_date=False):
+    """Write a graph CSVs in the mule-hunt layout using only required columns."""
+    data = root / "data"
+    (data / "accounts").mkdir(parents=True, exist_ok=True)
+    (data / "transactions").mkdir(parents=True, exist_ok=True)
+    (data / "fraud").mkdir(parents=True, exist_ok=True)
+    accounts = pd.DataFrame({"account_id": [f"acc_{i}" for i in range(6)]})
+    if with_creation_date:
+        accounts["creation_date"] = ["2023-01-01"] * 6
+    accounts.to_csv(data / "accounts" / "accounts_0_0.csv", index=False)
+
+    tx = pd.DataFrame({
+        "tx_id": [f"tx_{i}" for i in range(8)],
+        "src_id": ["acc_0", "acc_1", "acc_2", "acc_3", "acc_0", "acc_1", "acc_2", "acc_3"],
+        "dst_id": ["acc_1", "acc_2", "acc_3", "acc_0", "acc_1", "acc_2", "acc_3", "acc_0"],
+        "amount": [100.0] * 8,
+    })
+    if with_timestamp:
+        tx["timestamp"] = ["2024-05-01 10:00:00"] * 8
+    tx.to_csv(data / "transactions" / "transactions_0_0.csv", index=False)
+
+    fraud_tx = pd.DataFrame({
+        "tx_id": ["tx_f0", "tx_f1"],
+        "src_id": ["acc_0", "acc_1"],
+        "dst_id": ["acc_1", "acc_2"],
+        "amount": [9999.0, 9999.0],
+    })
+    if with_timestamp:
+        fraud_tx["timestamp"] = ["2025-01-01 10:00:00", "2025-01-01 11:00:00"]
+    fraud_tx.to_csv(data / "fraud" / "transactions_fraud.csv", index=False)
+    pd.DataFrame({"involved_accounts": ["acc_0|acc_1|acc_2"]}).to_csv(data / "fraud" / "fraud_cases.csv", index=False)
+    return load_graph(data, split="random", seed=1)
+
+
+def test_node_features_fallback_without_account_attributes(tmp_path):
+    data = _write_minimal_graph(tmp_path)
+    assert not any(n in data.feature_names for n in ("balance", "risk_score", "age_days"))
+    assert {"in_deg", "out_deg", "unique_in", "unique_out"} <= set(data.feature_names)
+    assert data.x.shape[1] == len(data.feature_names)
+    assert data.x_raw.shape[1] == len(data.feature_names)
+
+
+def test_edge_features_fallback_without_timestamp_and_creation(tmp_path):
+    data = _write_minimal_graph(tmp_path)
+    assert data.edge_feature_names == ["amount_log"]
+    assert data.edge_attr.shape[1] == 1
+
+
+def test_edge_features_skip_since_without_timestamp(tmp_path):
+    data = _write_minimal_graph(tmp_path, with_creation_date=True)
+    assert data.edge_feature_names == ["amount_log"]
+
+
+def test_edge_features_full_when_timestamp_and_creation_present(tmp_path):
+    data = _write_minimal_graph(tmp_path, with_timestamp=True, with_creation_date=True)
+    assert data.edge_feature_names == ["amount_log", "hour_sin", "hour_cos", "since_creation_log"]
+    assert int(data.edge_label.sum()) == 2
     client, _ = _client(tmp_path)
     ring = client.get("/api/ring/0").json()
     assert len(ring["transactions"]) > 0

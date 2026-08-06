@@ -75,17 +75,11 @@ def load_graph(
         if aid in id_to_idx:
             y[id_to_idx[aid]] = 1
 
-    base_names = ["balance", "risk_score", "age_days", "in_deg", "out_deg", "unique_in", "unique_out"]
-    if with_amount_stats:
-        base_names += ["amt_in_mean", "amt_out_mean", "amt_in_sum", "amt_out_sum"]
-    if with_cycle_counts:
-        base_names += ["triangle_count", "clustering_coef"]
-
-    x_full = build_node_features(
+    x_full, full_names = build_node_features(
         accounts, edge_index, edge_amounts, n_nodes, with_amount_stats, with_cycle_counts
     )
     x, keep = drop_constant_columns(x_full)
-    feature_names = [base_names[i] for i in keep]
+    feature_names = [full_names[i] for i in keep]
 
     ring_id = torch.full((n_nodes,), -1, dtype=torch.long)
     for i, ring in enumerate(rings):
@@ -118,10 +112,10 @@ def load_graph(
         "balance", "risk_score", "age_days"
     ]
     data.cold_start_indices = [
-        base_names.index("balance"),
-        base_names.index("risk_score"),
-        base_names.index("age_days"),
-    ] if all(n in base_names for n in data.cold_start_feature_names) else [0, 1, 2] if len(base_names) >= 3 else None
+        full_names.index("balance"),
+        full_names.index("risk_score"),
+        full_names.index("age_days"),
+    ] if all(n in full_names for n in data.cold_start_feature_names) else [0, 1, 2] if len(full_names) >= 3 else None
 
     if split == "rings":
         _ring_aware_split(data, rng, test_rings, val_frac)

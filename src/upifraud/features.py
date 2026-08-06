@@ -15,37 +15,55 @@ def build_node_features(
     n_nodes: int,
     with_amount_stats: bool = False,
     with_cycle_counts: bool = False,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, list[str]]:
     """Build per-node features. Amount aggregates are optional: the fraud
     generator encodes ring edges with a distinctive amount, so including
     amount stats trivially reveals rings. The default (structural) features
     isolate the network-signal contribution to detection. Cycle counts are a
     cheap structural signal of ring structure (a 6-cycle ring shows up as
     many 3-cycles once chorded, and clustering elevates for dense mule hubs).
+
+    Account attribute columns (balance, risk_score, creation_date) are
+    optional: when a column is absent the corresponding feature is skipped,
+    so any accounts CSV with at least an ``account_id`` column loads, and the
+    returned names stay aligned with the feature columns.
     """
     src = edge_index[0].numpy()
     dst = edge_index[1].numpy()
     amt = amounts.numpy()
 
     acc = accounts_df.set_index("account_id")
-    bal = np.log1p(acc["balance"].values)
-    risk = acc["risk_score"].values
-    creation = pd.to_datetime(acc["creation_date"])
-    age_days = np.log1p((pd.Timestamp("2025-12-31") - creation).dt.days.values.astype(float))
+    features: list[np.ndarray] = []
+    names: list[str] = []
+    if "balance" in acc:
+        features.append(np.log1p(acc["balance"].to_numpy(dtype=float)))
+        names.append("balance")
+    if "risk_score" in acc:
+        features.append(acc["risk_score"].to_numpy(dtype=float))
+        names.append("risk_score")
+    if "creation_date" in acc:
+        creation = pd.to_datetime(acc["creation_date"])
+        age_days = np.log1p(
+            (pd.Timestamp("2025-12-31") - creation).dt.days.to_numpy(dtype=float)
+        )
+        features.append(age_days)
+        names.append("age_days")
 
     in_deg = np.bincount(dst, minlength=n_nodes)
     out_deg = np.bincount(src, minlength=n_nodes)
-
-    features = [bal, risk, age_days, in_deg, out_deg]
+    features += [in_deg, out_deg]
+    names += ["in_deg", "out_deg"]
 
     edges_df = pd.DataFrame({"src": src, "dst": dst})
     unique_out = edges_df.groupby("dst")["src"].nunique().reindex(range(n_nodes), fill_value=0)
     unique_in = edges_df.groupby("src")["dst"].nunique().reindex(range(n_nodes), fill_value=0)
     features += [unique_in.to_numpy(), unique_out.to_numpy()]
+    names += ["unique_in", "unique_out"]
 
     if with_cycle_counts:
         tri, cc = _triangle_counts(src, dst, n_nodes)
         features += [np.log1p(tri), cc]
+        names += ["triangle_count", "clustering_coef"]
 
     if with_amount_stats:
         edges_df["amount"] = amt
@@ -61,8 +79,9 @@ def build_node_features(
             np.log1p(in_sum.to_numpy()),
             np.log1p(out_sum.to_numpy()),
         ]
+        names += ["amt_in_mean", "amt_out_mean", "amt_in_sum", "amt_out_sum"]
 
-    return torch.tensor(np.stack(features, axis=1), dtype=torch.float32)
+    return torch.tensor(np.stack(features, axis=1), dtype=torch.float32), names
 
 
 def _triangle_counts(
@@ -105,24 +124,38 @@ def build_edge_features(
     transaction and the sender account's creation date. The amount is the
     single most predictive signal on synthetic data (the generator encodes
     ring edges with a distinctive amount), so structural signal must come
-    from the node-embedding side of the edge head.
+    from the node-embedding side of the edge head. ``amount`` and ``src_id``
+    are required; the ``timestamp`` and account ``creation_date`` columns are
+    optional — their features are skipped when absent, and the returned names
+    stay aligned with the feature columns.
     """
     sub = tx_df.set_index("tx_id").loc[tx_ids]
+    features: list[np.ndarray] = []
+    names: list[str] = []
+
     amt = np.log1p(sub["amount"].to_numpy(dtype=float))
+    features.append(amt)
+    names.append("amount_log")
 
-    ts = pd.to_datetime(sub["timestamp"])
-    hour = ts.dt.hour.to_numpy(dtype=float)
-    hour_sin = np.sin(2.0 * np.pi * hour / 24.0)
-    hour_cos = np.cos(2.0 * np.pi * hour / 24.0)
+    if "timestamp" in sub:
+        ts = pd.to_datetime(sub["timestamp"])
+        hour = ts.dt.hour.to_numpy(dtype=float)
+        features.append(np.sin(2.0 * np.pi * hour / 24.0))
+        features.append(np.cos(2.0 * np.pi * hour / 24.0))
+        names += ["hour_sin", "hour_cos"]
+    else:
+        ts = None
 
-    created = pd.to_datetime(
-        accounts_df.set_index("account_id").loc[sub["src_id"].to_numpy(), "creation_date"]
-    ).to_numpy()
-    since_hours = (ts.to_numpy() - created) / pd.Timedelta(hours=1)
-    since_hours = np.nan_to_num(since_hours, nan=0.0, posinf=0.0)
-    since_log = np.log1p(np.clip(since_hours, 0.0, None))
+    if "creation_date" in accounts_df and ts is not None and "src_id" in sub:
+        created = pd.to_datetime(
+            accounts_df.set_index("account_id").loc[sub["src_id"].to_numpy(), "creation_date"]
+        ).to_numpy()
+        since_hours = (ts.to_numpy() - created) / pd.Timedelta(hours=1)
+        since_hours = np.nan_to_num(since_hours, nan=0.0, posinf=0.0)
+        features.append(np.log1p(np.clip(since_hours, 0.0, None)))
+        names.append("since_creation_log")
 
     return (
-        torch.tensor(np.stack([amt, hour_sin, hour_cos, since_log], axis=1), dtype=torch.float32),
-        ["amount_log", "hour_sin", "hour_cos", "since_creation_log"],
+        torch.tensor(np.stack(features, axis=1), dtype=torch.float32),
+        names,
     )

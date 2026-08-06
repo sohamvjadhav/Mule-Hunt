@@ -286,6 +286,20 @@ Mule-Hunt loads account CSVs, transaction CSVs, fraud transaction labels, and
 fraud-case metadata into one PyG graph. Each account receives a node label of
 `1` when it belongs to a planted ring and `0` otherwise.
 
+Only three columns are required: `account_id` on the account CSVs, and
+`tx_id`/`src_id`/`dst_id`/`amount` on the transaction CSVs. All other
+attributes are optional and gracefully skipped when absent:
+
+- `balance`, `risk_score`, `creation_date` (accounts): when missing, the
+  account-attribute features are dropped and detection uses the structural
+  features alone (degrees and unique counterparties, plus `--cycle-counts`);
+- `timestamp` (transactions): when missing, the hour-of-day and
+  account-age edge features are dropped (they cannot be computed without a
+  transaction time);
+- `fraud/transactions_fraud.csv` and `fraud/fraud_cases.csv`: optional, but
+  required for supervised labels — without them there is nothing to train
+  against, so evaluation metrics are meaningless.
+
 By default, the node representation uses account and structural features:
 
 - log balance;
@@ -412,10 +426,11 @@ calibrated probability.
 **Cold-start fallback.** Accounts with very few transactions (combined degree
 below `--cold-start-threshold`, default 10) have too little neighborhood
 structure for a GNN to score meaningfully. For those accounts the API routes to
-a class-balanced gradient-boosted tabular model trained on
-`balance`, `risk_score`, and `age_days` only, so a brand-new account still gets
-a principled score instead of a default. The cold-start model's training AUC
-and feature list are stored in the training metadata.
+a class-balanced gradient-boosted tabular model trained on the account
+attributes available in the data (e.g. `balance`, `risk_score`, and `age_days`),
+so a brand-new account still gets a principled score instead of a default. The
+cold-start model's training AUC and feature list are stored in the training
+metadata.
 
 **PSI drift monitoring.** The model is trained on one graph and served against
 data that will drift. `GET /api/drift` computes the
