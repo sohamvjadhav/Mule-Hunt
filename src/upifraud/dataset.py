@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import Data
@@ -16,6 +17,7 @@ def load_graph(
     data_dir: Path,
     with_amount_stats: bool = False,
     with_cycle_counts: bool = False,
+    with_temporal: bool = False,
     split: str = "rings",
     test_rings: int = 3,
     val_frac: float = 0.15,
@@ -63,6 +65,11 @@ def load_graph(
     )
     tx_amount_map = dict(zip(tx["tx_id"], tx["amount"]))
     edge_amounts = torch.tensor([tx_amount_map[tid] for tid in edges["tx_id"]])
+    edge_ts = None
+    if "timestamp" in tx:
+        ts_epoch = pd.to_datetime(tx["timestamp"]).astype("int64") // 10**9
+        edge_ts_map = dict(zip(tx["tx_id"], ts_epoch.to_numpy()))
+        edge_ts = torch.tensor([edge_ts_map[tid] for tid in edges["tx_id"]], dtype=torch.float32)
     edge_labels = torch.tensor(
         [1 if tid in fraud_tx_ids else 0 for tid in edges["tx_id"]]
     )
@@ -76,7 +83,14 @@ def load_graph(
             y[id_to_idx[aid]] = 1
 
     x_full, full_names = build_node_features(
-        accounts, edge_index, edge_amounts, n_nodes, with_amount_stats, with_cycle_counts
+        accounts,
+        edge_index,
+        edge_amounts,
+        n_nodes,
+        with_amount_stats,
+        with_cycle_counts,
+        with_temporal=with_temporal,
+        edge_ts=edge_ts,
     )
     x, keep = drop_constant_columns(x_full)
     feature_names = [full_names[i] for i in keep]
@@ -107,7 +121,14 @@ def load_graph(
     data.feature_names = feature_names
     data.edge_feature_names = edge_feature_names
     data.edge_amounts = edge_amounts
+    data.edge_ts = edge_ts
     data.x_raw = x_full
+    data.accounts = accounts
+    data.feature_flags = {
+        "with_amount_stats": with_amount_stats,
+        "with_cycle_counts": with_cycle_counts,
+        "with_temporal": with_temporal,
+    }
     data.cold_start_feature_names = [
         "balance", "risk_score", "age_days"
     ]
@@ -198,3 +219,77 @@ def _finalize_masks(data: Data, train: torch.Tensor, val: torch.Tensor, test: to
     data.train_mask = train
     data.val_mask = val
     data.test_mask = test
+
+
+def build_snapshots(data: Data, k: int) -> list[Data]:
+    """Slice the edge timeline into ``k`` cumulative snapshots.
+
+    Snapshot ``s`` contains every edge whose timestamp falls at or before the
+    ``(s+1)/k`` quantile of the edge timeline. Node features and edge-level
+    data are recomputed from the subset that has "happened" by that time, so
+    a snapshot is exactly the graph known at that point in time. If the graph
+    has no timestamps (or ``k <= 1``) the original graph is returned as a
+    single snapshot.
+    """
+    ts = getattr(data, "edge_ts", None)
+    if ts is None or k <= 1 or int(ts.numel()) == 0:
+        return [data]
+
+    t = ts.numpy()
+    finite = np.isfinite(t)
+    sorted_t = np.sort(t[finite])
+    cuts = np.quantile(sorted_t, np.arange(1, k + 1) / k)
+
+    snaps: list[Data] = []
+    for s in range(k):
+        keep = np.flatnonzero(finite & (t <= cuts[s]))
+        snaps.append(_rebuild_snapshot(data, keep, s, float(cuts[s])))
+    return snaps
+
+
+def _rebuild_snapshot(data: Data, kept_indices: np.ndarray, slice: int, boundary: float) -> Data:
+    ei = data.edge_index[:, kept_indices]
+    ea = data.edge_amounts[kept_indices]
+    et = data.edge_ts[kept_indices]
+
+    flags = dict(getattr(data, "feature_flags", {}))
+    x_full, snap_names = build_node_features(
+        data.accounts,
+        ei,
+        ea,
+        data.num_nodes,
+        flags.get("with_amount_stats", False),
+        flags.get("with_cycle_counts", False),
+        flags.get("with_temporal", False),
+        et,
+    )
+    x, keep = drop_constant_columns(x_full)
+    feature_names = [snap_names[i] for i in keep]
+
+    snap = Data(
+        x=x,
+        edge_index=ei,
+        edge_attr=data.edge_attr[kept_indices],
+        y=data.y,
+        edge_label=data.edge_label[kept_indices],
+        ring_id=data.ring_id,
+        num_rings=data.num_rings,
+    )
+    snap.node_ids = data.node_ids
+    snap.feature_names = feature_names
+    snap.edge_feature_names = data.edge_feature_names
+    snap.edge_amounts = ea
+    snap.edge_ts = et
+    snap.x_raw = x_full
+    snap.accounts = data.accounts
+    snap.feature_flags = flags
+    snap.cold_start_feature_names = getattr(data, "cold_start_feature_names", [])
+    snap.cold_start_indices = getattr(data, "cold_start_indices", None)
+    snap.slice = slice
+    snap.boundary_ts = boundary
+
+    snap.train_mask = data.train_mask
+    snap.val_mask = data.val_mask
+    snap.test_mask = data.test_mask
+    _edge_masks(snap)
+    return snap

@@ -47,6 +47,7 @@ def cmd_train_gnn(args) -> None:
         Path(args.data),
         with_amount_stats=args.amount_stats,
         with_cycle_counts=args.cycle_counts,
+        with_temporal=getattr(args, "temporal_features", False),
         split=args.split,
         test_rings=args.test_rings,
         seed=args.seed,
@@ -81,6 +82,7 @@ def cmd_train_baseline(args) -> None:
         Path(args.data),
         with_amount_stats=args.amount_stats,
         with_cycle_counts=args.cycle_counts,
+        with_temporal=getattr(args, "temporal_features", False),
         split=args.split,
         test_rings=args.test_rings,
         seed=args.seed,
@@ -174,6 +176,7 @@ def cmd_demo(args) -> None:
         data=str(data_dir), out_dir=str(out), model=args.model, hidden=args.hidden,
         epochs=args.epochs, lr=args.lr, patience=args.patience, seed=args.seed,
         amount_stats=args.amount_stats, cycle_counts=args.cycle_counts,
+        temporal_features=getattr(args, "temporal_features", False),
         split="rings", test_rings=args.test_rings,
         calibrate=args.calibrate, cold_start_threshold=args.cold_start_threshold,
         num_layers=args.num_layers, jk=args.jk, edge_loss_weight=args.edge_loss_weight,
@@ -183,6 +186,7 @@ def cmd_demo(args) -> None:
         cmd_train_baseline(argparse.Namespace(
             data=str(data_dir), out_dir=str(out), model=base, seed=args.seed,
             amount_stats=args.amount_stats, cycle_counts=args.cycle_counts,
+            temporal_features=getattr(args, "temporal_features", False),
             split="rings", test_rings=args.test_rings,
         ))
     print("== comparison ==")
@@ -230,6 +234,7 @@ def cmd_benchmark(args) -> None:
             data_dir,
             with_amount_stats=args.amount_stats,
             with_cycle_counts=args.cycle_counts,
+            with_temporal=getattr(args, "temporal_features", False),
             split="rings",
             test_rings=args.test_rings,
             seed=args.seed,
@@ -272,6 +277,118 @@ def cmd_benchmark(args) -> None:
     print(f"benchmark results written to {results_dir / 'benchmark.json'}")
 
 
+def cmd_temporal(args) -> None:
+    """Dynamic-graph experiment: train on time-sliced snapshots and evaluate
+    forward in time (per-slice reveal) plus staleness of an old model."""
+    import shutil
+
+    from .dataset import build_snapshots
+    from .train import standardize
+
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    data_dir = out / "data"
+    if (not (data_dir / "accounts").exists()) or args.regenerate:
+        shutil.rmtree(data_dir, ignore_errors=True)
+        generate_toy(
+            data_dir, n_accounts=args.n_accounts, n_tx=args.n_tx, n_rings=args.rings,
+            burst_days=args.burst_days, seed=args.seed,
+        )
+    print(f"== generated burst graph at {data_dir} ==")
+
+    data = load_graph(
+        data_dir,
+        with_amount_stats=False,
+        with_cycle_counts=args.cycle_counts,
+        with_temporal=args.temporal_features,
+        split="rings",
+        test_rings=args.test_rings,
+        seed=args.seed,
+    )
+    snaps = build_snapshots(data, args.slices)
+    print(f"== {len(snaps)} cumulative snapshots over "
+          f"{data.edge_index.size(1)} edges (burst_days={args.burst_days}) ==")
+
+    slice_rows: list[dict] = []
+    staleness_rows: list[dict] = []
+    first_model = None
+    first_args = None
+    for i, snap in enumerate(snaps):
+        snap_out = out / f"slice_{i}"
+        result = train_gnn(
+            snap, model_name=args.model, hidden=args.hidden, epochs=args.epochs,
+            lr=args.lr, patience=args.patience, seed=args.seed, out_dir=snap_out,
+            calibrate=args.calibrate, cold_start_threshold=0,
+            num_layers=args.num_layers, jk=args.jk, edge_loss_weight=args.edge_loss_weight,
+        )
+        test = evaluate_gnn(snap, result["scores"], split="test")
+        src, dst = snap.edge_index
+        same_ring = (snap.ring_id[src] >= 0) & (snap.ring_id[src] == snap.ring_id[dst])
+        test_ring_edges = int((snap.test_mask[src] & same_ring).sum())
+        slice_rows.append(
+            {
+                "slice": i,
+                "n_edges": int(snap.edge_index.size(1)),
+                "boundary_ts": float(snap.boundary_ts) if hasattr(snap, "boundary_ts") else None,
+                "test_ring_edges": test_ring_edges,
+                "test_auc": round(test["auc"], 4),
+                "test_ap": round(test["ap"], 4),
+                "test_n_fraud": test["n_fraud"],
+                "best_val_ap": round(result["args"]["best_val_ap"], 4),
+            }
+        )
+        print(f"  slice {i}: n_edges={snap.edge_index.size(1):>6} "
+              f"test_ring_edges={test_ring_edges:>4} "
+              f"test_auc={test['auc']:.4f} test_ap={test['ap']:.4f} "
+              f"n_fraud={test['n_fraud']}")
+        if i == 0:
+            first_model = result["model"]
+            first_args = result["args"]
+
+    print("== staleness: slice-0 model re-scored on every later slice ==")
+    mean = torch.tensor(first_args["mean"])
+    std = torch.tensor(first_args["std"])
+    for i in range(1, len(snaps)):
+        snap = snaps[i]
+        if snap.x.size(1) != first_args["in_dim"]:
+            print(f"  slice {i}: skipped (feature dim {snap.x.size(1)} "
+                  f"!= model in_dim {first_args['in_dim']})")
+            continue
+        xz, _, _ = standardize(snap.x, mean, std)
+        with torch.no_grad():
+            scores = first_model(xz, snap.edge_index).sigmoid().numpy()
+        test = evaluate_gnn(snap, scores, split="test")
+        staleness_rows.append(
+            {
+                "slice": i,
+                "test_auc": round(test["auc"], 4),
+                "test_ap": round(test["ap"], 4),
+                "test_n_fraud": test["n_fraud"],
+            }
+        )
+        print(f"  slice {i}: test_auc={test['auc']:.4f} test_ap={test['ap']:.4f} "
+              f"n_fraud={test['n_fraud']}")
+
+    report = {
+        "config": {
+            "n_accounts": args.n_accounts,
+            "n_tx": args.n_tx,
+            "n_rings": args.rings,
+            "test_rings": args.test_rings,
+            "burst_days": args.burst_days,
+            "slices": args.slices,
+            "model": args.model,
+            "temporal_features": args.temporal_features,
+            "seed": args.seed,
+        },
+        "per_slice": slice_rows,
+        "staleness": staleness_rows,
+    }
+    report_path = out / "temporal.json"
+    report_path.write_text(json.dumps(report, indent=2))
+    print(f"temporal results written to {report_path}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="upifraud", description="UPI fraud detection with GNNs")
     parser.add_argument("--version", action="version", version=f"upi-fraud-gnn {__version__}")
@@ -306,6 +423,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--num-layers", type=int, default=2, help="message-passing depth (JK aggregates all layers)")
     p.add_argument("--jk", choices=["cat", "max"], default="cat", help="jumping-knowledge aggregation")
     p.add_argument("--edge-loss-weight", type=float, default=0.5, help="weight of the transaction-level loss term (0 disables the edge head)")
+    p.add_argument("--temporal-features", action="store_true", help="add burst/activity-span temporal features (leak-aware, needs timestamps)")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_train_gnn)
 
@@ -319,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--cold-start-threshold", type=int, default=10)
     p.add_argument("--cycle-counts", action="store_true", help="add per-node 3-cycle counts and clustering coefficient")
+    p.add_argument("--temporal-features", action="store_true", help="add burst/activity-span temporal features (leak-aware, needs timestamps)")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_train_baseline)
 
@@ -356,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--num-layers", type=int, default=2, help="message-passing depth (JK aggregates all layers)")
     p.add_argument("--jk", choices=["cat", "max"], default="cat", help="jumping-knowledge aggregation")
     p.add_argument("--edge-loss-weight", type=float, default=0.5, help="weight of the transaction-level loss term (0 disables the edge head)")
+    p.add_argument("--temporal-features", action="store_true", help="add burst/activity-span temporal features (leak-aware, needs timestamps)")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_demo)
 
@@ -378,9 +498,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--num-layers", type=int, default=2, help="message-passing depth (JK aggregates all layers)")
     p.add_argument("--jk", choices=["cat", "max"], default="cat", help="jumping-knowledge aggregation")
     p.add_argument("--edge-loss-weight", type=float, default=0.5, help="weight of the transaction-level loss term (0 disables the edge head)")
+    p.add_argument("--temporal-features", action="store_true", help="add burst/activity-span temporal features (leak-aware, needs timestamps)")
     p.add_argument("--regenerate", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_benchmark)
+
+    p = sub.add_parser("temporal", help="dynamic-graph experiment: time-sliced snapshots + forward evaluation")
+    p.add_argument("--out-dir", default="runs/temporal")
+    p.add_argument("--n-accounts", type=int, default=10000)
+    p.add_argument("--n-tx", type=int, default=120_000)
+    p.add_argument("--rings", type=int, default=50)
+    p.add_argument("--test-rings", type=int, default=10)
+    p.add_argument("--burst-days", type=int, default=2, help="per-ring activity window (days)")
+    p.add_argument("--slices", type=int, default=4, help="number of cumulative snapshots")
+    p.add_argument("--model", choices=["gcn", "sage", "gat"], default="sage")
+    p.add_argument("--hidden", type=int, default=64)
+    p.add_argument("--epochs", type=int, default=120)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--patience", type=int, default=16)
+    p.add_argument("--num-layers", type=int, default=2)
+    p.add_argument("--jk", choices=["cat", "max"], default="cat")
+    p.add_argument("--edge-loss-weight", type=float, default=0.5)
+    p.add_argument("--temporal-features", action="store_true", help="add burst/activity-span temporal features")
+    p.add_argument("--cycle-counts", action="store_true")
+    p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--regenerate", action="store_true")
+    p.add_argument("--seed", type=int, default=42)
+    p.set_defaults(func=cmd_temporal)
 
     args = parser.parse_args(argv)
     args.func(args)

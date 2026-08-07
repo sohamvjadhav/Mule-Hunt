@@ -15,6 +15,8 @@ def build_node_features(
     n_nodes: int,
     with_amount_stats: bool = False,
     with_cycle_counts: bool = False,
+    with_temporal: bool = False,
+    edge_ts: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, list[str]]:
     """Build per-node features. Amount aggregates are optional: the fraud
     generator encodes ring edges with a distinctive amount, so including
@@ -22,6 +24,11 @@ def build_node_features(
     isolate the network-signal contribution to detection. Cycle counts are a
     cheap structural signal of ring structure (a 6-cycle ring shows up as
     many 3-cycles once chorded, and clustering elevates for dense mule hubs).
+
+    Temporal features (``with_temporal``) require per-edge timestamps and are
+    also leak-aware by default: burstiness is only meaningful when the data
+    has honest time structure (e.g. the generator's ring-burst windows), and
+    off by default otherwise.
 
     Account attribute columns (balance, risk_score, creation_date) are
     optional: when a column is absent the corresponding feature is skipped,
@@ -64,6 +71,28 @@ def build_node_features(
         tri, cc = _triangle_counts(src, dst, n_nodes)
         features += [np.log1p(tri), cc]
         names += ["triangle_count", "clustering_coef"]
+
+    if with_temporal and edge_ts is not None:
+        ts = edge_ts.numpy()
+        tdf = pd.DataFrame({"n": np.concatenate([src, dst]), "t": np.concatenate([ts, ts])})
+        tdf = tdf.sort_values(["n", "t"])
+        agg = (
+            tdf.groupby("n")["t"]
+            .agg(["min", "max", "count"])
+            .reindex(range(n_nodes), fill_value=0.0)
+        )
+        mn = agg["min"].to_numpy()
+        mx = agg["max"].to_numpy()
+        cnt = agg["count"].to_numpy()
+        span = mx - mn
+        tdf["span"] = tdf["n"].map(dict(zip(range(n_nodes), span)))
+        tdf["rel"] = (tdf["t"] - tdf["n"].map(dict(zip(range(n_nodes), mn)))) / tdf["span"]
+        recent = tdf[(tdf["span"] > 0) & (tdf["rel"] >= 0.8)]
+        recent_counts = recent.groupby("n").size().reindex(range(n_nodes), fill_value=0).to_numpy()
+        burst_recent = recent_counts / np.maximum(cnt, 1)
+        activity_span = np.log1p(np.where(span > 0, span, 0.0))
+        features += [burst_recent, activity_span]
+        names += ["burst_recent_frac", "activity_span_log"]
 
     if with_amount_stats:
         edges_df["amount"] = amt

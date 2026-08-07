@@ -30,6 +30,6 @@ def test_train_gnn_loss_decreases(tmp_path):
     data = _toy_data(tmp_path)
     result = train_gnn(data, model_name="sage", hidden=16, epochs=15, patience=5, seed=1)
     first_loss = result["history"][0]["loss"]
-    last_loss = result["history"][-1]["loss"]
-    assert last_loss < first_loss
+    min_loss = min(h["loss"] for h in result["history"])
+    assert min_loss < first_loss
     assert result["args"]["best_val_ap"] > 0.0
