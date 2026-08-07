@@ -221,6 +221,20 @@ def _finalize_masks(data: Data, train: torch.Tensor, val: torch.Tensor, test: to
     data.test_mask = test
 
 
+def count_same_ring_edges(data: Data, mask: torch.Tensor | None = None) -> int:
+    """Number of edges whose endpoints belong to the same planted ring.
+
+    ``mask`` (e.g. a node split mask) restricts the count to edges touching
+    the masked nodes. This is the "revealed ring structure" measure used by
+    the temporal and adversarial experiments.
+    """
+    src, dst = data.edge_index
+    same_ring = (data.ring_id[src] >= 0) & (data.ring_id[src] == data.ring_id[dst])
+    if mask is not None:
+        same_ring = same_ring & mask[src]
+    return int(same_ring.sum())
+
+
 def build_snapshots(data: Data, k: int) -> list[Data]:
     """Slice the edge timeline into ``k`` cumulative snapshots.
 

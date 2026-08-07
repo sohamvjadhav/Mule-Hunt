@@ -7,12 +7,14 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
+from torch_geometric.data import Data
 
 from . import __version__
 from .api import create_app
 from .baseline import evaluate_baseline, train_baseline
-from .dataset import load_graph
+from .dataset import count_same_ring_edges, load_graph
 from .evaluate import ring_recovery, top_fraud_accounts
 from .generate import generate_toy, run_gen_fraud_graph
 from .train import evaluate_gnn, train_gnn
@@ -25,6 +27,89 @@ def _print_table(rows: list[dict], cols: list[str]) -> None:
     print("-+-".join("-" * w for w in widths))
     for r in rows:
         print(" | ".join(str(r[c]).ljust(w) for c, w in zip(cols, widths)))
+
+
+def _parse_budgets(s: str) -> list[float]:
+    return [float(x) for x in s.split(",") if x.strip()]
+
+
+def _perturb(
+    data_dir: Path,
+    out: Path,
+    typ: str,
+    budget: float,
+    n_test_ring_edges: int,
+    test_ring_accounts: set[str],
+    test_ring_pairs: set[tuple[str, str]],
+    normal_accounts: list[str],
+    rng,
+) -> Path:
+    """Write a perturbed copy of the graph under ``out``.
+
+    ``inject`` adds ``round(budget * n_test_ring_edges)`` low-value transfers
+    out of held-out ring accounts to normal accounts (camouflage: makes ring
+    hubs look busier). ``drop`` removes the earliest evidence: the same number
+    of held-out ring fraud transfers are deleted from both the transactions
+    and fraud-tag CSVs. Everything else — accounts, masks (given the same
+    seed), node order — is unchanged, so a fixed model can be re-scored
+    verbatim on the perturbed graph.
+    """
+    import shutil
+
+    import pandas as pd
+
+    attack_dir = out / "perturbed" / f"{typ}_{budget:g}"
+    shutil.rmtree(attack_dir, ignore_errors=True)
+    shutil.copytree(data_dir, attack_dir)
+
+    n = max(1, round(budget * n_test_ring_edges))
+    tx_file = attack_dir / "transactions" / "transactions_0_0.csv"
+    tx = pd.read_csv(tx_file)
+
+    if typ == "inject":
+        new = []
+        nxt = len(tx) + len(pd.read_csv(attack_dir / "fraud" / "transactions_fraud.csv"))
+        for _ in range(n):
+            src = rng.choice(sorted(test_ring_accounts))
+            dst = rng.choice(normal_accounts)
+            new.append(
+                {
+                    "tx_id": f"attack_{nxt}",
+                    "src_id": src,
+                    "dst_id": dst,
+                    "amount": rng.uniform(10.0, 500.0),
+                    "timestamp": (
+                        f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d} "
+                        f"{rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}:"
+                        f"{rng.randint(0, 59):02d}"
+                    ),
+                    "description": "UPI transfer",
+                }
+            )
+            nxt += 1
+        tx = pd.concat([tx, pd.DataFrame(new)], ignore_index=True)
+        tx.to_csv(tx_file, index=False)
+    elif typ == "drop":
+        fraud_file = attack_dir / "fraud" / "transactions_fraud.csv"
+        fraud_tx = pd.read_csv(fraud_file)
+        combined = pd.concat([tx, fraud_tx], ignore_index=True)
+        pair_cols = list(
+            zip(combined["src_id"].to_numpy(), combined["dst_id"].to_numpy())
+        )
+        to_drop = pd.Series([p in test_ring_pairs for p in pair_cols])
+        drop_ids = set(
+            combined.loc[to_drop].sort_values("timestamp")["tx_id"].head(n)
+        )
+        if not drop_ids:
+            print(f"  warning: no test-ring fraud edges available for drop budget={budget}")
+        tx = tx[~tx["tx_id"].isin(drop_ids)]
+        tx.to_csv(tx_file, index=False)
+        fraud_tx = fraud_tx[~fraud_tx["tx_id"].isin(drop_ids)]
+        fraud_tx.to_csv(fraud_file, index=False)
+    else:
+        raise ValueError(f"unknown attack type {typ!r}")
+
+    return attack_dir
 
 
 def cmd_generate(args) -> None:
@@ -322,9 +407,7 @@ def cmd_temporal(args) -> None:
             num_layers=args.num_layers, jk=args.jk, edge_loss_weight=args.edge_loss_weight,
         )
         test = evaluate_gnn(snap, result["scores"], split="test")
-        src, dst = snap.edge_index
-        same_ring = (snap.ring_id[src] >= 0) & (snap.ring_id[src] == snap.ring_id[dst])
-        test_ring_edges = int((snap.test_mask[src] & same_ring).sum())
+        test_ring_edges = count_same_ring_edges(snap, snap.test_mask)
         slice_rows.append(
             {
                 "slice": i,
@@ -387,6 +470,139 @@ def cmd_temporal(args) -> None:
     report_path = out / "temporal.json"
     report_path.write_text(json.dumps(report, indent=2))
     print(f"temporal results written to {report_path}")
+
+
+def cmd_attack(args) -> None:
+    """Adversarial-robustness experiment: train on the clean graph, then
+    perturb held-out ring edges (inject camouflage or drop evidence) and
+    re-score the fixed model on each perturbed graph."""
+    import random as _random
+    import shutil
+
+    from .train import standardize
+
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    data_dir = out / "data"
+    if (not (data_dir / "accounts").exists()) or args.regenerate:
+        shutil.rmtree(data_dir, ignore_errors=True)
+        generate_toy(
+            data_dir, n_accounts=args.n_accounts, n_tx=args.n_tx, n_rings=args.rings,
+            burst_days=args.burst_days, seed=args.seed,
+        )
+    print(f"== generated burst graph at {data_dir} ==")
+
+    data = load_graph(
+        data_dir,
+        with_cycle_counts=args.cycle_counts,
+        with_temporal=args.temporal_features,
+        split="rings",
+        test_rings=args.test_rings,
+        seed=args.seed,
+    )
+    n_ring_edges = count_same_ring_edges(data, data.test_mask)
+    node_ids = data.node_ids
+    ring_mask = data.ring_id >= 0
+    test_ring_ids = {int(r) for r in data.ring_id[data.test_mask & ring_mask].tolist()}
+    test_ring_accounts = {
+        node_ids[i] for i in range(data.num_nodes) if int(data.ring_id[i]) in test_ring_ids
+    }
+    all_ring = {node_ids[i] for i in range(data.num_nodes) if int(data.ring_id[i]) >= 0}
+    normal_accounts = sorted(set(node_ids) - all_ring)
+    src, dst = data.edge_index
+    same_ring_test = (
+        (data.ring_id[src] >= 0)
+        & (data.ring_id[src] == data.ring_id[dst])
+        & data.test_mask[src]
+    )
+    test_ring_pairs = {
+        (node_ids[src[i]], node_ids[dst[i]])
+        for i in same_ring_test.nonzero().flatten().tolist()
+    }
+    if not test_ring_pairs:
+        raise SystemExit("no held-out ring fraud edges found; increase --test-rings")
+
+    print("== training GNN on the clean graph ==")
+    result = train_gnn(
+        data, model_name=args.model, hidden=args.hidden, epochs=args.epochs,
+        lr=args.lr, patience=args.patience, seed=args.seed, out_dir=out,
+        calibrate=args.calibrate, cold_start_threshold=0,
+        num_layers=args.num_layers, jk=args.jk, edge_loss_weight=args.edge_loss_weight,
+    )
+    model = result["model"]
+    mean = torch.tensor(result["args"]["mean"])
+    std = torch.tensor(result["args"]["std"])
+    in_dim = int(result["args"]["in_dim"])
+
+    def score(g: Data) -> np.ndarray:
+        if g.x.size(1) != in_dim:
+            raise ValueError(
+                f"feature dim {g.x.size(1)} != model in_dim {in_dim}; "
+                "re-load perturbed graphs with the same feature flags"
+            )
+        xz, _, _ = standardize(g.x, mean, std)
+        with torch.no_grad():
+            return model(xz, g.edge_index).sigmoid().numpy()
+
+    def row(typ: str, budget: float, n_pert: int, g: Data, eval_: dict) -> dict:
+        return {
+            "type": typ,
+            "budget": budget,
+            "n_perturbed": n_pert,
+            "n_edges": int(g.edge_index.size(1)),
+            "test_ring_edges": count_same_ring_edges(g, g.test_mask),
+            "test_auc": round(eval_["auc"], 4),
+            "test_ap": round(eval_["ap"], 4),
+            "test_n_fraud": eval_["n_fraud"],
+        }
+
+    clean = evaluate_gnn(data, score(data), split="test")
+    rows = [row("none", 0.0, 0, data, clean)]
+    print(f"  clean: test_auc={clean['auc']:.4f} test_ap={clean['ap']:.4f} "
+          f"test_ring_edges={n_ring_edges} n_fraud={clean['n_fraud']}")
+
+    for typ in args.types:
+        for budget in _parse_budgets(args.budgets):
+            rng = _random.Random(args.seed)
+            pert_dir = _perturb(
+                data_dir, out, typ, budget, n_ring_edges,
+                test_ring_accounts, test_ring_pairs, normal_accounts, rng,
+            )
+            g = load_graph(
+                pert_dir,
+                with_cycle_counts=args.cycle_counts,
+                with_temporal=args.temporal_features,
+                split="rings",
+                test_rings=args.test_rings,
+                seed=args.seed,
+            )
+            eval_ = evaluate_gnn(g, score(g), split="test")
+            r = row(typ, budget, max(1, round(budget * n_ring_edges)), g, eval_)
+            rows.append(r)
+            print(f"  {typ:<6} budget={budget:<.3g} pert={r['n_perturbed']:>4} "
+                  f"test_auc={r['test_auc']:.4f} (delta {r['test_auc']-clean['auc']:+.4f}) "
+                  f"test_ap={r['test_ap']:.4f}")
+
+    report = {
+        "config": {
+            "n_accounts": args.n_accounts,
+            "n_tx": args.n_tx,
+            "n_rings": args.rings,
+            "test_rings": args.test_rings,
+            "burst_days": args.burst_days,
+            "types": args.types,
+            "budgets": _parse_budgets(args.budgets),
+            "model": args.model,
+            "temporal_features": args.temporal_features,
+            "clean_test_auc": round(clean["auc"], 4),
+            "clean_test_ap": round(clean["ap"], 4),
+            "seed": args.seed,
+        },
+        "rows": rows,
+    }
+    report_path = out / "attack.json"
+    report_path.write_text(json.dumps(report, indent=2))
+    print(f"attack results written to {report_path}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -525,6 +741,32 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--regenerate", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_temporal)
+
+    p = sub.add_parser("attack", help="adversarial robustness: perturb held-out ring edges and re-score a fixed model")
+    p.add_argument("--out-dir", default="runs/attack")
+    p.add_argument("--n-accounts", type=int, default=10000)
+    p.add_argument("--n-tx", type=int, default=120_000)
+    p.add_argument("--rings", type=int, default=50)
+    p.add_argument("--test-rings", type=int, default=10)
+    p.add_argument("--burst-days", type=int, default=2, help="per-ring activity window (days)")
+    p.add_argument("--types", nargs="+", choices=["inject", "drop"], default=["inject", "drop"],
+                   help="perturbation kinds: inject camouflage edges or drop ring evidence")
+    p.add_argument("--budgets", type=str, default="0.25,0.5,1.0",
+                   help="comma-separated fractions of held-out ring fraud edges to perturb")
+    p.add_argument("--model", choices=["gcn", "sage", "gat"], default="sage")
+    p.add_argument("--hidden", type=int, default=64)
+    p.add_argument("--epochs", type=int, default=120)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--patience", type=int, default=16)
+    p.add_argument("--num-layers", type=int, default=2)
+    p.add_argument("--jk", choices=["cat", "max"], default="cat")
+    p.add_argument("--edge-loss-weight", type=float, default=0.5)
+    p.add_argument("--temporal-features", action="store_true", help="add burst/activity-span temporal features")
+    p.add_argument("--cycle-counts", action="store_true")
+    p.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--regenerate", action="store_true")
+    p.add_argument("--seed", type=int, default=42)
+    p.set_defaults(func=cmd_attack)
 
     args = parser.parse_args(argv)
     args.func(args)

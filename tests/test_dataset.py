@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from upifraud.dataset import build_snapshots, load_graph
+from upifraud.dataset import build_snapshots, count_same_ring_edges, load_graph
 from upifraud.evaluate import operating_point
 from upifraud.features import _triangle_counts
 from upifraud.generate import generate_toy
@@ -129,3 +129,23 @@ def test_temporal_features_flag_changes_dimension(tmp_path):
     assert base.x.shape[1] + 2 == temp.x.shape[1]
     assert not {"burst_recent_frac", "activity_span_log"} <= set(base.feature_names)
     assert {"burst_recent_frac", "activity_span_log"} <= set(temp.feature_names)
+
+
+def test_snapshot_ring_edge_reveal_non_decreasing(tmp_path):
+    generate_toy(tmp_path, n_accounts=300, n_tx=2500, n_rings=5, burst_days=2, seed=5)
+    data = load_graph(tmp_path, split="rings", test_rings=2, seed=5)
+    snaps = build_snapshots(data, 4)
+    reveals = [count_same_ring_edges(s, s.test_mask) for s in snaps]
+    assert reveals == sorted(reveals)
+    assert reveals[-1] == count_same_ring_edges(data, data.test_mask)
+
+
+def test_count_same_ring_edges_matches_edges(tmp_path):
+    generate_toy(tmp_path, n_accounts=200, n_tx=800, n_rings=4, seed=7)
+    data = load_graph(tmp_path, split="rings", test_rings=2, seed=7)
+    src, dst = data.edge_index
+    expected = int(
+        ((data.ring_id[src] >= 0) & (data.ring_id[src] == data.ring_id[dst])).sum()
+    )
+    assert count_same_ring_edges(data) == expected
+    assert count_same_ring_edges(data, data.test_mask) <= expected
