@@ -236,6 +236,7 @@ Calibration and cold-start are on by default and can be adjusted:
 | `--num-layers` | `2` | Message-passing depth; Jumping Knowledge aggregates all layers |
 | `--jk` | `cat` | JK aggregation: `cat` or `max` |
 | `--edge-loss-weight` | `0.5` | Weight of the transaction-level loss (set to `0` to disable the edge head) |
+| `--temporal-features` | off | Add burst/activity-span temporal node features (requires timestamps) |
 
 ### Train a baseline
 
@@ -275,6 +276,19 @@ upifraud benchmark \
 The benchmark trains the selected GNN and baselines at each requested
 hardness level and writes `bench/results/benchmark.json`. Add
 `--regenerate` to replace already-generated benchmark data.
+
+### Run the temporal experiment
+
+```bash
+upifraud temporal --out-dir runs/temporal \
+  --n-accounts 10000 --n-tx 120000 --rings 50 --test-rings 10 --slices 4
+```
+
+Trains a GNN at every cumulative snapshot (reveal curve) and re-scores every
+later snapshot with the slice-0 model (staleness), writing
+`runs/temporal/temporal.json`. Add `--temporal-features` to enable the burst
+node features; see the
+[temporal section](#temporal-dynamic-graph-modeling) for the honest verdict.
 
 ## Data and features
 
@@ -320,6 +334,12 @@ coefficient (undirected 3-cycle structure, computed in milliseconds on the
 documented below: on gen-fraud-graph data, 32% of ring nodes sit in at least
 one triangle (vs 24% of normal nodes), but the overlap is large and the
 features did not help the GNN.
+
+`--temporal-features` adds two time-aware node features (requires transaction
+`timestamp`): the fraction of an account's transactions from the last 20% of
+its activity window (a burst proxy) and the log width of that window. Both are
+leak-aware: each is computed only from the account's *own* transaction history,
+so they encode activity dynamics without exposing the label.
 
 ## Evaluation protocol
 
@@ -463,6 +483,69 @@ treating a ring as one opaque blob.
 > of transfers to examine. On real data the amount encoding would be far less
 > distinctive and the structural (embedding) side would matter more.
 
+## Temporal (dynamic-graph) modeling
+
+Payment fraud happens in bursts: a ring's transfers concentrate in a short
+window, then stop. The pipeline now supports time as a first-class axis:
+
+- **Ring-burst synthetic data.** The built-in generator (`--toy`, also used
+  by the temporal experiment) places every transaction belonging to a ring —
+  cycle edges, split edges, and the ring's transfers to normal accounts —
+  inside a per-ring window of `--burst-days` (default 2) while background
+  traffic stays uniform across the year. This gives honest temporal structure
+  to experiments.
+- **Cumulative snapshots.** `build_snapshots(data, k)` slices the edge
+  timeline at quantile boundaries: snapshot *s* is exactly the graph known at
+  that point — node and edge features are recomputed from the edges that have
+  happened so far, so nothing leaks from the future.
+- **Temporal node features** (`--temporal-features`, leak-aware, off by
+  default like amount stats): `burst_recent_frac` (fraction of an account's
+  activity in the latest 20% of its active span — high for a laundering burst)
+  and `activity_span_log` (log of the account's active time span).
+- **`upifraud temporal`** runs the dynamic-graph experiment: train a fresh
+  model at every snapshot (how detection improves as rings reveal) and score
+  every later snapshot with the slice-0 model (model staleness — how quickly
+  a fixed checkpoint decays as the world moves).
+
+```sh
+upifraud temporal --out-dir runs/temporal --n-accounts 10000 --n-tx 120000 \
+  --rings 50 --test-rings 10 --slices 4
+upifraud temporal --out-dir runs/temporal-tf --temporal-features   # same, + burst features
+```
+
+Results land in `runs/temporal/temporal.json` (per-slice and staleness rows).
+
+### Experiment: temporal slices (10,000 accounts, 120,000 transfers, 4 snapshots)
+
+The committed run holds out 10 rings and slices the edge timeline into four
+cumulative snapshots. "Ring edges" counts held-out ring transfers that exist
+at that point — the gradual reveal the dynamic-graph story predicts:
+
+| Slice | Edges | Revealed ring edges | AUC (base) | AUC (+ temporal) |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 30,157 | 38 | 0.697 | 0.643 |
+| 1 | 60,312 | 45 | 0.710 | 0.712 |
+| 2 | 90,467 | 56 | 0.683 | 0.692 |
+| 3 | 120,622 | 63 | 0.683 | 0.682 |
+
+Staleness (slice-0 model re-scored downstream): AUC 0.715 → 0.710 → 0.714.
+
+**Verdict: the mechanism works but the synthetic signal is temporally flat.**
+The reveal is real (test-ring edges grow from 38 to 63 as time advances), yet
+AUC stays ~0.68–0.71 — most of a ring's structure arrives with the first
+slice of its burst, and uniform background traffic means the model trained on
+slice 0 does not decay (staleness ≈ training-slice performance). Adding
+`--temporal-features` changes nothing at this scale (±0.01). On real payment
+graphs, where criminal bursts cluster and background demand drifts, the
+snapshot/forward/staleness machinery — the actual deliverable — is what would
+make the temporal axis pay off.
+
+> **Honest caveat:** on synthetic data the "gradual reveal" is engineered by
+> the burst generator; real payment graphs have far messier temporal
+> structure. The value of this feature is the *mechanism* — snapshot
+> construction, forward evaluation, and staleness measurement — which applies
+> to any timestamped graph.
+
 ## Risk API
 
 `upifraud serve` loads a trained GNN checkpoint and `graph.pt` from the same
@@ -557,8 +640,10 @@ workflow.
 - **Unused text/embeddings:** generated descriptions and embeddings are not yet
   consumed by the model.
 
-Planned directions include temporal (dynamic-graph) modeling, adversarial-robustness
-tests, counterfactual explanations, and scaling the benchmark to larger graphs.
+Planned directions include adversarial-robustness tests, counterfactual explanations, and scaling the
+benchmark to larger graphs. Temporal (dynamic-graph) modeling is implemented
+as snapshot slicing, forward evaluation, and staleness scoring
+(see the [temporal section](#temporal-dynamic-graph-modeling)).
 
 ## License
 

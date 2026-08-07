@@ -1,7 +1,8 @@
 import numpy as np
+import pandas as pd
 import torch
 
-from upifraud.dataset import load_graph
+from upifraud.dataset import build_snapshots, load_graph
 from upifraud.evaluate import operating_point
 from upifraud.features import _triangle_counts
 from upifraud.generate import generate_toy
@@ -77,3 +78,54 @@ def test_triangle_counts_on_planted_structure():
     assert tri[3] == 0 and tri[4] == 0 and tri[5] == 0
     assert cc[0] == 1.0 and cc[1] == 1.0 and cc[2] == 1.0
     assert cc[4] == 0.0
+
+
+def test_generator_ring_activity_is_bursty(tmp_path):
+    generate_toy(tmp_path, n_accounts=300, n_tx=2500, n_rings=5, burst_days=2, seed=5)
+    tx = pd.read_csv(tmp_path / "transactions" / "transactions_0_0.csv")
+    fraud_tx = pd.read_csv(tmp_path / "fraud" / "transactions_fraud.csv")
+    cases = pd.read_csv(tmp_path / "fraud" / "fraud_cases.csv")
+    fraud_tx["ts"] = pd.to_datetime(fraud_tx["timestamp"])
+    tx["ts"] = pd.to_datetime(tx["timestamp"])
+
+    all_members = set(cases["involved_accounts"].str.split("|").sum())
+    for members in cases["involved_accounts"].str.split("|"):
+        members = set(members)
+        ring_tx = fraud_tx[
+            fraud_tx["src_id"].isin(members) & fraud_tx["dst_id"].isin(members)
+        ]
+        assert len(ring_tx) > 0
+        span = (ring_tx["ts"].max() - ring_tx["ts"].min()).total_seconds() / 86400
+        assert span <= 2.5  # burst_days=2 plus a rounding day
+
+    ring_noise = tx[tx["src_id"].isin(all_members)]
+    assert len(ring_noise) > 0
+
+    background = tx[~tx["src_id"].isin(all_members) & ~tx["dst_id"].isin(all_members)]
+    assert (background["ts"].max() - background["ts"].min()).days > 300
+
+
+def test_build_snapshots_cumulative(tmp_path):
+    generate_toy(tmp_path, n_accounts=300, n_tx=2500, n_rings=5, burst_days=2, seed=5)
+    data = load_graph(tmp_path, split="random", seed=1)
+    snaps = build_snapshots(data, 4)
+    assert len(snaps) == 4
+    counts = [int(s.edge_index.size(1)) for s in snaps]
+    assert counts == sorted(counts)
+    assert counts[-1] == data.edge_index.size(1)
+    assert counts[0] < counts[-1]
+    for s in snaps:
+        assert s.x.shape[0] == data.num_nodes
+        assert s.x.shape[1] == len(s.feature_names)
+        assert float(s.edge_ts.max()) <= float(s.boundary_ts) + 1e-6
+        assert int((s.train_mask | s.val_mask | s.test_mask).sum()) == data.num_nodes
+        assert s.edge_train.dtype == torch.bool
+
+
+def test_temporal_features_flag_changes_dimension(tmp_path):
+    generate_toy(tmp_path, n_accounts=300, n_tx=2500, n_rings=5, burst_days=2, seed=5)
+    base = load_graph(tmp_path, with_temporal=False)
+    temp = load_graph(tmp_path, with_temporal=True)
+    assert base.x.shape[1] + 2 == temp.x.shape[1]
+    assert not {"burst_recent_frac", "activity_span_log"} <= set(base.feature_names)
+    assert {"burst_recent_frac", "activity_span_log"} <= set(temp.feature_names)

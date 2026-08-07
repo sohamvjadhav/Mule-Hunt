@@ -44,9 +44,18 @@ def generate_toy(
     n_rings: int = 5,
     ring_min: int = 4,
     ring_max: int = 7,
+    burst_days: int = 2,
     seed: int = 42,
 ) -> None:
-    """Write a small graph in the same CSV schema as gen-fraud-graph."""
+    """Write a small graph in the same CSV schema as gen-fraud-graph.
+
+    Ring activity is temporally bursty: every transaction belonging to a
+    ring (cycle edges, split edges, and the ring's transfers to normal
+    accounts) lands inside a per-ring window of ``burst_days`` days, while
+    normal background traffic is spread uniformly across the year. This
+    gives the synthetic data a real temporal structure for dynamic-graph
+    experiments: a ring's edges appear (and disappear) together in time.
+    """
     rng = random.Random(seed)
     accounts_dir = output_dir / "accounts"
     tx_dir = output_dir / "transactions"
@@ -54,6 +63,18 @@ def generate_toy(
     accounts_dir.mkdir(parents=True, exist_ok=True)
     tx_dir.mkdir(parents=True, exist_ok=True)
     fraud_dir.mkdir(parents=True, exist_ok=True)
+
+    year_start = pd.Timestamp("2025-01-01")
+    year_span = pd.Timedelta(days=365)
+    burst_span = pd.Timedelta(days=burst_days)
+
+    def ring_window() -> tuple[pd.Timestamp, pd.Timestamp]:
+        start = year_start + pd.Timedelta(days=rng.randint(0, 330)) + burst_span * rng.random()
+        return start, start + burst_span
+
+    def ts_in(start: pd.Timestamp, span: pd.Timedelta) -> str:
+        dt = start + span * rng.random()
+        return f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d} {dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}"
 
     account_ids = [f"acc_{i}" for i in range(n_accounts)]
     accounts = pd.DataFrame(
@@ -78,7 +99,7 @@ def generate_toy(
                 "src_id": src,
                 "dst_id": dst,
                 "amount": rng.uniform(10.0, 500.0),
-                "timestamp": f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d} {rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}",
+                "timestamp": ts_in(year_start, year_span),
                 "description": "UPI transfer",
             }
         )
@@ -95,6 +116,7 @@ def generate_toy(
         members = rng.sample(pool, size)
         used.update(members)
         ring_accounts.append(members)
+        win_start, _win_end = ring_window()
         for i in range(size):
             src = members[i]
             dst = members[(i + 1) % size]
@@ -104,7 +126,7 @@ def generate_toy(
                     "src_id": src,
                     "dst_id": dst,
                     "amount": FRAUD_AMOUNT,
-                    "timestamp": f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d} {rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}",
+                    "timestamp": ts_in(win_start, burst_span),
                     "description": "SUSPICIOUS CYCLE",
                 }
             )
@@ -119,7 +141,7 @@ def generate_toy(
                         "src_id": src,
                         "dst_id": dst,
                         "amount": FRAUD_AMOUNT,
-                        "timestamp": f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d} {rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}",
+                        "timestamp": ts_in(win_start, burst_span),
                         "description": "SUSPICIOUS SPLIT",
                     }
                 )
@@ -133,7 +155,7 @@ def generate_toy(
                     "src_id": src,
                     "dst_id": dst,
                     "amount": rng.uniform(10.0, 500.0),
-                    "timestamp": f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d} {rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}",
+                    "timestamp": ts_in(win_start, burst_span),
                     "description": "UPI transfer",
                 }
             )
