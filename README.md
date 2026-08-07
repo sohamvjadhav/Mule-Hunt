@@ -290,6 +290,20 @@ later snapshot with the slice-0 model (staleness), writing
 node features; see the
 [temporal section](#temporal-dynamic-graph-modeling) for the honest verdict.
 
+### Run the adversarial-robustness experiment
+
+```bash
+upifraud attack --out-dir runs/attack \
+  --n-accounts 10000 --n-tx 120000 --rings 50 --test-rings 10 \
+  --types inject drop --budgets 0.25,0.5,1.0
+```
+
+Trains a GNN on the clean graph, then perturbs held-out ring edges —
+`inject` adds low-value camouflage transfers out of ring accounts, `drop`
+deletes the earliest ring evidence — and re-scores the fixed model on each
+perturbed graph, writing `runs/attack/attack.json`. See the
+[adversarial section](#adversarial-robustness) for the honest verdict.
+
 ## Data and features
 
 The external generator is the open-source synthetic
@@ -546,6 +560,56 @@ make the temporal axis pay off.
 > construction, forward evaluation, and staleness measurement — which applies
 > to any timestamped graph.
 
+## Adversarial robustness
+
+A deployed detector faces a shifting adversary: mule networks that add
+low-value camouflage transfers to look busier, or that retrofit their
+transaction graph to hide/remove incriminating edges. `upifraud attack`
+measures how far this can push a *fixed, already-deployed* model. It trains a
+GNN on the clean graph and re-scores held-out rings after two perturbations
+of magnitude `budget × (held-out ring edges)`:
+
+- **`inject`** — add that many normal-looking transfers out of ring accounts
+  to non-ring accounts (camouflage; every injected edge is feature-labeled
+  as a normal transfer);
+- **`drop`** — delete that many of the earliest held-out ring fraud edges
+  (evidence removal).
+
+The model is re-scored on each perturbed graph with the *same* weights, and
+node features are recomputed from the perturbed CSVs — the realistic setting
+where the deployed extraction pipeline would also see the attack edges in the
+degree/counterparty features. Results:
+
+| Attack | Budget | Edits | Test AUC | Δ vs clean |
+| --- | ---: | ---: | ---: | ---: |
+| — (clean) | 0 | 0 | 0.695 | — |
+| inject | 0.25 | 16 | 0.709 | +0.014 |
+| inject | 0.50 | 32 | 0.721 | +0.026 |
+| inject | 1.00 | 63 | 0.749 | +0.054 |
+| drop | 0.25 | 16 | 0.664 | −0.031 |
+| drop | 0.50 | 32 | 0.633 | −0.062 |
+| drop | 1.00 | 63 | 0.578 | −0.117 |
+
+**Verdict: the model is far more fragile to evidence removal than to
+camouflage — and naive camouflage can backfire.** Deleting a quarter of a
+held-out ring's edges costs ~0.03 AUC of a full deletion ~0.12: the GNN
+learns ring *structure*, so removing it genuinely releases detection.
+Injecting ordinary transfers *helps* the detector (up to +0.054): a few
+low-value edges just make ring hubs look busier, which the structural head
+reads as extra evidence — camouflage, as scattershot, does not transfer. On
+a real graph the asymmetry is the actionable takeaway: invest in
+tamper-evident transaction history (so incriminating edges cannot be
+silently deleted) before hardening against traffic-filling, and note that a
+serious adversary would *restructure* — split the ring across many fresh
+low-degree mule accounts — which is a much harder fight that this simple
+edge edit does not cover.
+
+> **Honest caveat:** this is a *fixed-model* evaluation — an attacker adapts to
+> the model over time, which is out of scope. Noise edges are engineered to
+> look like background (uniform low amounts); a targeted attack that mirrors
+> a ring's exact footprint would be a larger drop. The robust takeaway is
+> relative (drop ≫ inject), not absolute.
+
 ## Risk API
 
 `upifraud serve` loads a trained GNN checkpoint and `graph.pt` from the same
@@ -640,10 +704,11 @@ workflow.
 - **Unused text/embeddings:** generated descriptions and embeddings are not yet
   consumed by the model.
 
-Planned directions include adversarial-robustness tests, counterfactual explanations, and scaling the
-benchmark to larger graphs. Temporal (dynamic-graph) modeling is implemented
-as snapshot slicing, forward evaluation, and staleness scoring
-(see the [temporal section](#temporal-dynamic-graph-modeling)).
+Adversarial-robustness testing and temporal (dynamic-graph) modeling are
+implemented — see the [adversarial section](#adversarial-robustness) and the
+[temporal section](#temporal-dynamic-graph-modeling). Planned directions
+include counterfactual explanations and scaling the benchmark to larger
+graphs.
 
 ## License
 
