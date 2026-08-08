@@ -472,6 +472,26 @@ def cmd_temporal(args) -> None:
     print(f"temporal results written to {report_path}")
 
 
+def cmd_query(args) -> None:
+    """Answer a natural-language investigation question with a grounded
+    report generated entirely from graph facts (no LLM)."""
+    from .assistant import answer, load_deployed
+
+    dm = load_deployed(Path(args.out_dir))
+    for question in args.question:
+        out = answer(dm, question)
+        print(out["report"])
+        if args.json:
+            print(json.dumps({"question": question, **out}, indent=2, default=float))
+
+
+def cmd_mcp(args) -> None:
+    """Run the MCP investigation server (stdio) for coding agents."""
+    from .mcp_server import run_mcp
+
+    run_mcp(Path(args.out_dir))
+
+
 def cmd_attack(args) -> None:
     """Adversarial-robustness experiment: train on the clean graph, then
     perturb held-out ring edges (inject camouflage or drop evidence) and
@@ -767,6 +787,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--regenerate", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=cmd_attack)
+
+    p = sub.add_parser("query", help="answer natural-language questions with grounded investigation reports")
+    p.add_argument("--out-dir", default="models")
+    p.add_argument("question", nargs="+",
+                   help="question(s), e.g. \"why is acc_42 risky?\" \"describe ring 2\"")
+    p.add_argument("--json", action="store_true", help="also print structured JSON facts")
+    p.set_defaults(func=cmd_query)
+
+    p = sub.add_parser("mcp", help="run the MCP investigation server (stdio) for coding agents")
+    p.add_argument("--out-dir", default="models")
+    p.set_defaults(func=cmd_mcp)
 
     args = parser.parse_args(argv)
     args.func(args)

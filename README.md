@@ -1,7 +1,10 @@
 # Mule-Hunt
 
+[![PyPI](https://img.shields.io/pypi/v/mule-hunt.svg)](https://pypi.org/project/mule-hunt/)
+[![CI](https://img.shields.io/github/actions/workflow/status/sohamvjadhav/Mule-Hunt/ci.yml)](https://github.com/sohamvjadhav/Mule-Hunt/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![Downloads](https://img.shields.io/pypi/dm/mule-hunt)](https://pypi.org/project/mule-hunt/)
 
 Mule-Hunt is a graph-neural-network (GNN) pipeline for detecting coordinated
 fraud in UPI-style payment networks.
@@ -45,6 +48,10 @@ isolation.
 - A FastAPI risk-scoring service with a lightweight dashboard.
 - Optional plain-language account explanations, with a deterministic local
   fallback when no API key is configured.
+- An AI investigation assistant: `upifraud query` answers questions in
+  plain English with fully grounded reports, and `upifraud mcp` exposes the
+  same knowledge to any MCP-capable coding agent (Claude Code, Codex,
+  opencode, ...).
 
 ## Dashboard
 
@@ -644,17 +651,80 @@ most influential neighbors (`model_evidence` in the response). Set
 explanation path, which rewrites the evidence into a plain-language narrative;
 the service falls back to the local explanation if the request fails.
 
+## AI investigation assistant
+
+Beyond the API, Mule-Hunt speaks natural language. `upifraud query` answers
+questions like "why is account acc_1344 risky?" with an investigation-style
+report built entirely from graph facts — cycle membership, internal transfer
+totals and timing, counterparty risk, and the model's own top suspicious
+transactions. There is no LLM in the loop and nothing is hallucinated: every
+sentence is a rendered fact, so the output is safe to hand to an investigator
+or to a coding agent.
+
+```bash
+upifraud query --out-dir models \
+  "why is acc_1344 risky?" "describe ring 2" "top accounts"
+# add --json for the structured facts behind the prose
+```
+
+Example answer for a ring account:
+
+```text
+Investigation: acc_1344
+Risk: 0.987 (HIGH) — ranked 3 of 10,000 accounts.
+Ring member: acc_1344 sits in a planted ring of 4 accounts
+  (4 internal transfers, ₹39,996 moved across 1 day(s)).
+Activity: 7 outgoing and 8 incoming transfers (degree 15).
+Timing: first edge at 1753410508, last at 1753496908 — 15 timestamped edges.
+Highest-risk counterparties: acc_846 (0.025), acc_...
+Top suspicious transfer: acc_1344 → acc_1715 (₹9,999) with transaction risk 0.991.
+```
+
+### MCP server for coding agents
+
+`upifraud mcp` exposes the same knowledge as an
+[MCP](https://modelcontextprotocol.io) server over stdio, so any MCP-capable
+agent (Claude Code, Codex, opencode, ...) can investigate the graph with
+grounded tools instead of guessing:
+
+| Tool | Purpose |
+| --- | --- |
+| `network_summary` | Nodes, edges, rings, fraud counts, model in use |
+| `account_risk(account_id)` | Score, band, rank, degree, label |
+| `explain_account(account_id)` | Why the account is (or is not) risky, as prose |
+| `investigate(account_id)` | Facts + rendered report |
+| `ring_details(ring_id)` | Members, internal transfers, amounts, timing |
+| `top_risky(k)` | The k highest-risk accounts |
+
+Wire it up, e.g. in an MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "mule-hunt": {
+      "command": "upifraud",
+      "args": ["mcp", "--out-dir", "models"]
+    }
+  }
+}
+```
+
+or directly: `make mcp`. The server is deterministic — no external model
+calls, no API keys — so agents get verifiable answers about the graph.
+
 ## Repository layout
 
 ```text
 src/upifraud/
 ├── api.py          FastAPI risk service and dashboard endpoints
+├── assistant.py    Grounded natural-language investigation reports
 ├── baseline.py     Random Forest, HGB, and XGBoost baselines
 ├── cli.py          upifraud command-line interface
 ├── dataset.py      CSV loading and ring-aware splitting
 ├── evaluate.py     AUC, AP, and ring-recovery metrics
 ├── features.py     Account and graph feature construction
 ├── generate.py     External and toy graph generators
+├── mcp_server.py   MCP (stdio) tools for coding agents
 ├── models.py       GCN, GraphSAGE, and GATv2 (configurable depth/JK + edge head)
 └── train.py        GNN training and checkpoint serialization
 
@@ -663,15 +733,22 @@ tests/              Unit and API tests
 results/            Committed benchmark output
 pyproject.toml      Package metadata and dependencies
 CONTRIBUTING.md     Contribution workflow
+AGENTS.md           Guidance for AI coding agents working here
 ```
 
 ## Development
 
-Run the test suite and linter before submitting changes:
+Agent and human onboarding starts at [`AGENTS.md`](AGENTS.md) (commands,
+architecture, conventions) and [`CONTRIBUTING.md`](CONTRIBUTING.md). The
+common commands are also wrapped as Make targets:
 
 ```bash
-pytest
-ruff check .
+make lint          # ruff check src tests
+make test          # pytest
+make demo          # end-to-end smoke run on the toy graph
+make mcp           # start the MCP investigation server for models/
+make build         # sdist + wheel
+make release-check # pyproject version must match the newest v* tag
 ```
 
 For quick iteration, use the toy generator:
@@ -679,6 +756,11 @@ For quick iteration, use the toy generator:
 ```bash
 upifraud demo --toy --toy-accounts 120 --toy-tx 500 --rings 3
 ```
+
+Releases follow the process in `AGENTS.md`: version bump in the shipping PR,
+then a `vX.Y.Z` tag, which publishes to PyPI via trusted publishing.
+Changes are tracked in [`CHANGELOG.md`](CHANGELOG.md); vulnerabilities go in
+[`SECURITY.md`](SECURITY.md).
 
 The project is intentionally synthetic and privacy-preserving. Do not add
 secrets, real payment data, or personally identifiable information to the
