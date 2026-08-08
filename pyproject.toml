@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mule-hunt"
-version = "0.3.1"
+version = "0.4.0"
 description = "Graph-neural-network fraud detection for UPI-style payment graphs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,7 @@ dependencies = [
     "scikit-learn>=1.3",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "mcp>=1.0,<2",
 ]
 
 [project.optional-dependencies]
