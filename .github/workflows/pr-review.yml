@@ -1,0 +1,65 @@
+name: pr-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  agent-review:
+    if: ${{ secrets.CODEX_API_KEY != '' || secrets.OPENAI_API_KEY != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Collect diff
+        id: diff
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} > /tmp/pr.diff
+          echo "lines=$(wc -l < /tmp/pr.diff)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Agent review
+        id: review
+        run: |
+          codex exec --full-auto --skip-git-repo-check \
+            "You are a senior maintainer of the Mule-Hunt repo (GNN fraud detection, Python/TypeScript-free). Review this PR diff for: correctness bugs, security issues, honest reporting (results claims must match what the code computes), test coverage of new behavior, and style drift vs. the repo conventions in AGENTS.md. Keep the review under 250 words, use a Markdown bullet list with file:line references, and finish with a verdict line: 'Verdict: LGTM' or 'Verdict: changes requested'. Only discuss what the diff actually changes." \
+            < /tmp/pr.diff > /tmp/review.md
+        env:
+          OPENAI_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
+
+      - name: Post review comment
+        run: |
+          {
+            echo "## Mule-Hunt automated review (Codex CLI)"
+            echo
+            echo "_Automated review of ${{ github.event.pull_request.head.sha }} (diff: ${{ steps.diff.outputs.lines }} lines)._"
+            echo
+            cat /tmp/review.md
+          } > /tmp/body.md
+          existing=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            --jq '.[] | select(.body | startswith("## Mule-Hunt automated review")) | .id')
+          if [ -n "$existing" ]; then
+            gh api repos/${{ github.repository }}/issues/comments/$existing -X DELETE
+          fi
+          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body-file /tmp/body.md
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -226,3 +226,38 @@ async function loadDistribution() {
 loadSummary().catch((e) => console.error(e));
 loadTop().catch((e) => console.error(e));
 loadDistribution().catch((e) => console.error(e));
+
+async function askAssistant(q) {
+  const res = await fetch("/api/ask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question: q }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `${res.status}`);
+  }
+  return res.json();
+}
+
+$("ask-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("ask-input");
+  const out = $("ask-output");
+  const q = input.value.trim();
+  if (!q) return;
+  out.textContent = "…";
+  try {
+    const a = await askAssistant(q);
+    if (a.kind === "top") {
+      out.textContent =
+        a.report +
+        "\n" +
+        a.accounts.map((r) => `${r.account_id}: ${r.risk_score.toFixed(3)} (${r.risk_band})`).join("\n");
+    } else {
+      out.textContent = a.report;
+    }
+  } catch (err) {
+    out.textContent = `Error: ${err.message}`;
+  }
+});
