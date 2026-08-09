@@ -27,6 +27,16 @@
       <div class="card"><div class="card-value" id="c-rings">–</div><div class="card-label">Fraud rings</div></div>
     </section>
 
+    <section class="panel">
+      <h2>Investigation assistant</h2>
+      <form id="ask-form" class="ask-form">
+        <input id="ask-input" type="text" autocomplete="off"
+          placeholder='Try "why is acc_7 risky?" · "describe ring 0" · "top risky accounts" · "network summary"' />
+        <button type="submit">Ask</button>
+      </form>
+      <pre id="ask-output" class="ask-output">Ask a natural-language question about accounts, rings, or the network. Answers are grounded in the model and graph — no fabricated numbers.</pre>
+    </section>
+
     <section class="grid">
       <div class="panel">
         <h2>Top risk accounts</h2>

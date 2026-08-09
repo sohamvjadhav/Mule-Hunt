@@ -80,6 +80,7 @@ def test_frontend_served(tmp_path):
     client = _make_client(tmp_path)
     html = client.get("/").text
     assert "Mule-Hunt" in html
+    assert "Investigation assistant" in html and 'id="ask-form"' in html
     assert client.get("/styles.css").status_code == 200
     assert client.get("/app.js").status_code == 200
 
@@ -99,3 +100,25 @@ def test_explain_fallback_local(tmp_path, monkeypatch):
     assert isinstance(body["model_evidence"], dict)
 
     assert client.get("/api/explain/nope").status_code == 404
+
+
+def test_ask_endpoint_routes_questions(tmp_path):
+    client = _make_client(tmp_path)
+    top = client.get("/api/top?k=1").json()
+    aid = top[0]["account_id"]
+
+    for q, kind, key in (
+        (f"why is {aid} risky?", "account", "report"),
+        ("describe ring 0", "ring", "report"),
+        ("show me the top risky accounts", "top", "accounts"),
+        ("give me a network summary", "summary", "facts"),
+    ):
+        resp = client.post("/api/ask", json={"question": q})
+        assert resp.status_code == 200, q
+        body = resp.json()
+        assert body["kind"] == kind, q
+        assert key in body and body["report"]
+
+    assert client.post("/api/ask", json={"question": ""}).status_code == 422
+    unknown = client.post("/api/ask", json={"question": "what time is it"}).json()
+    assert unknown["kind"] == "unknown" and unknown["report"]

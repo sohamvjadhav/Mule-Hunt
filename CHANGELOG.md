@@ -2,6 +2,18 @@
 
 All notable changes to Mule-Hunt are documented here, grouped by release.
 
+## 0.5.0
+
+### Added
+
+- `POST /api/ask`: the investigation assistant is now a service endpoint —
+  natural-language questions about accounts, rings, the top risk list, or the
+  network, answered with grounded facts.
+- Dashboard investigation panel: ask the assistant directly from the browser.
+- Automated PR review: `.github/workflows/pr-review.yml` runs the Codex CLI
+  over every PR diff and posts a maintainer-style review comment (activates
+  when a `CODEX_API_KEY` / `OPENAI_API_KEY` secret exists; otherwise skips).
+
 ## 0.4.0
 
 ### Added

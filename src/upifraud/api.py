@@ -25,6 +25,10 @@ class BatchRequest(BaseModel):
     account_ids: list[str]
 
 
+class AskRequest(BaseModel):
+    question: str
+
+
 class RiskResponse(BaseModel):
     account_id: str
     risk_score: float
@@ -526,6 +530,18 @@ def create_app(
             "explanation": _local_explanation(ctx, evidence),
             "model_evidence": evidence,
         }
+
+    @app.post("/api/ask")
+    def ask(req: AskRequest) -> dict:
+        from .assistant import DeployedModel, answer
+
+        if not req.question.strip():
+            raise HTTPException(status_code=422, detail="empty question")
+        dm = DeployedModel(data, model, scores, edge_scores, args, rank_map, id_to_idx)
+        try:
+            return answer(dm, req.question)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from None
 
     if frontend_dir is not None and frontend_dir.is_dir():
         app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="dashboard")

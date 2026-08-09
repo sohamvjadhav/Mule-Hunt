@@ -195,6 +195,52 @@ tbody tr:hover { background: var(--panel-2); }
 .detail .neighbors { margin-top: 12px; }
 .muted { color: var(--muted); }
 
+.ask-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ask-form input {
+  flex: 1;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.ask-form input:focus { outline: 1px solid var(--accent, #2dd4bf); }
+
+.ask-form button {
+  background: #2dd4bf;
+  color: #062a25;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 18px;
+  font-weight: 600;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ask-form button:hover { background: #5eead4; }
+
+.ask-output {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  min-height: 54px;
+  margin: 0;
+}
+
 .explain-box { margin-top: 16px; }
 .explain-box button {
   background: var(--panel-2);
