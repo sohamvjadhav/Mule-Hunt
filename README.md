@@ -638,7 +638,9 @@ dashboard endpoints.
 | `GET` | `/api/distribution?bins=20` | Risk-score histogram |
 | `GET` | `/api/drift?bins=10` | PSI between train and test score distributions (bins 4..50) |
 | `GET` | `/api/explain/{account_id}` | Plain-language risk explanation + model-grounded evidence (GNNExplainer drivers) |
-| `POST` | `/api/ask` | Grounded natural-language answer: account / ring / top / summary (`{"question": "..."}`) |
+| `POST` | `/api/ask` | Grounded natural-language answer: account / ring / top / summary / case / counterfactual (`{"question": "..."}`) |
+| `GET` | `/api/counterfactual/{account_id}?k=3` | Fixed-model sensitivity: drop the account's top-k risk edges, re-score, report the delta |
+| `GET` | `/api/case/{account_id}` | Complete investigation case file as Markdown (grounded, deterministic) |
 
 Risk scores are in `[0, 1]` and mapped to bands as follows:
 
@@ -670,6 +672,24 @@ upifraud query --out-dir models \
   "why is acc_1344 risky?" "describe ring 2" "top accounts"
 # add --json for the structured facts behind the prose
 ```
+
+### Case files
+
+`upifraud case` renders a complete, shareable investigation file for one
+account as Markdown — subject summary, ring context, top suspicious
+transactions, a counterfactual sensitivity probe, and a recommendation —
+written to stdout or to a file with `--output`:
+
+```bash
+upifraud case acc_1344 --out-dir models --output case-acc_1344.md
+```
+
+The counterfactual section is an honest *fixed-model* probe: it drops the
+account's highest-risk transfers, re-scores the frozen model with node
+features held constant, and reports the delta with its caveat (it measures
+dependence on the signal carried by those edges, not a retrained model). The
+same document is served at `GET /api/case/{account_id}` and downloadable from
+the dashboard.
 
 Example answer for a ring account:
 
@@ -802,11 +822,14 @@ workflow.
 - **Unused text/embeddings:** generated descriptions and embeddings are not yet
   consumed by the model.
 
-Adversarial-robustness testing and temporal (dynamic-graph) modeling are
-implemented — see the [adversarial section](#adversarial-robustness) and the
-[temporal section](#temporal-dynamic-graph-modeling). Planned directions
-include counterfactual explanations and scaling the benchmark to larger
-graphs.
+Adversarial-robustness testing, temporal (dynamic-graph) modeling, and
+counterfactual sensitivity analysis are implemented — see the
+[adversarial section](#adversarial-robustness), the
+[temporal section](#temporal-dynamic-graph-modeling), and the
+[case-file section](#case-files). The counterfactual probe is deliberately a
+fixed-model, feature-constant sensitivity check; a version that retrains on
+perturbed graphs is future work. Planned directions include scaling the
+benchmark to larger graphs.
 
 ## License
 

@@ -122,3 +122,29 @@ def test_ask_endpoint_routes_questions(tmp_path):
     assert client.post("/api/ask", json={"question": ""}).status_code == 422
     unknown = client.post("/api/ask", json={"question": "what time is it"}).json()
     assert unknown["kind"] == "unknown" and unknown["report"]
+
+
+def test_case_and_counterfactual_endpoints(tmp_path):
+    client = _make_client(tmp_path)
+    rings = client.get("/api/ring/0").json()
+    aid = rings["nodes"][0]["account_id"]
+
+    cf = client.get(f"/api/counterfactual/{aid}?k=2")
+    assert cf.status_code == 200
+    body = cf.json()
+    assert len(body["dropped_edges"]) == 2
+    for e in body["dropped_edges"]:
+        assert aid in (e["src"], e["dst"])
+    assert body["caveat"]
+
+    case = client.get(f"/api/case/{aid}")
+    assert case.status_code == 200
+    doc = case.json()["document"]
+    assert f"# Case file: {aid}" in doc
+    assert "## 5. Recommendation" in doc
+
+    assert client.get("/api/case/nope").status_code == 404
+    assert client.get("/api/counterfactual/nope").status_code == 404
+
+    asked = client.post("/api/ask", json={"question": f"write a case file for {aid}"}).json()
+    assert asked["kind"] == "case" and "# Case file:" in asked["document"]

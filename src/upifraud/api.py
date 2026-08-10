@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from torch_geometric.data import Data
 
+from . import __version__
 from .models import build_model
 from .train import standardize
 
@@ -542,6 +543,32 @@ def create_app(
             return answer(dm, req.question)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from None
+
+    @app.get("/api/counterfactual/{account_id}")
+    def counterfactual(account_id: str, k: int = 3) -> dict:
+        from .assistant import DeployedModel
+        from .assistant import counterfactual as cf_probe
+
+        if account_id not in id_to_idx:
+            raise HTTPException(status_code=404, detail=f"unknown account {account_id}")
+        dm = DeployedModel(data, model, scores, edge_scores, args, rank_map, id_to_idx)
+        try:
+            return cf_probe(dm, account_id, k=min(k, 10))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
+
+    @app.get("/api/case/{account_id}")
+    def case_file(account_id: str) -> dict:
+        from .assistant import DeployedModel, case_document
+
+        if account_id not in id_to_idx:
+            raise HTTPException(status_code=404, detail=f"unknown account {account_id}")
+        dm = DeployedModel(data, model, scores, edge_scores, args, rank_map, id_to_idx)
+        return {
+            "account_id": account_id,
+            "mule_hunt_version": __version__,
+            "document": case_document(dm, account_id, k=3, top_tx=5),
+        }
 
     if frontend_dir is not None and frontend_dir.is_dir():
         app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="dashboard")

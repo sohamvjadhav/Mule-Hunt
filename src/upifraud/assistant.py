@@ -19,6 +19,7 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
+from . import __version__
 from .api import band
 from .models import build_model
 from .train import standardize
@@ -247,6 +248,155 @@ def _ts(epoch: float) -> str:
     return str(epoch) if epoch is None else f"{epoch:.0f} (epoch s)"
 
 
+def counterfactual(dm: DeployedModel, account_id: str, k: int = 3) -> dict:
+    """Fixed-model sensitivity probe: drop the account's k highest-risk edges,
+    re-score with the frozen model, and report the delta.
+
+    This is deliberately not a retrained-model experiment: node features are
+    held constant, so the delta measures how much of the account's score is
+    carried by the signal of those specific edges.
+    """
+    i = dm.account(account_id)
+    src, dst = dm.src, dm.dst
+    incident = np.flatnonzero((src == i) | (dst == i))
+    if not len(incident):
+        raise ValueError(f"account {account_id!r} has no edges; nothing to drop")
+    if dm.edge_scores is None:
+        order = incident[: max(1, k)]
+    else:
+        order = incident[np.argsort(-dm.edge_scores[incident])[: max(1, k)]]
+
+    mean = torch.tensor(dm.args["mean"])
+    std = torch.tensor(dm.args["std"])
+    xz0, _, _ = standardize(dm.data.x, mean, std)
+    with torch.no_grad():
+        base = float(dm.model(xz0, dm.data.edge_index).sigmoid()[i].item())
+
+    keep = np.ones(src.shape[0], dtype=bool)
+    keep[order] = False
+    g = Data(
+        x=dm.data.x,
+        edge_index=dm.data.edge_index[:, keep],
+        num_nodes=dm.data.num_nodes,
+    )
+    xz, _, _ = standardize(g.x, mean, std)
+    with torch.no_grad():
+        now = float(dm.model(xz, g.edge_index).sigmoid()[i].item())
+
+    amounts = dm.data.edge_amounts.numpy()
+    dropped = [
+        {
+            "src": dm.data.node_ids[int(src[e])],
+            "dst": dm.data.node_ids[int(dst[e])],
+            "amount": float(amounts[e]),
+            "risk": float(dm.edge_scores[e]) if dm.edge_scores is not None else None,
+        }
+        for e in order
+    ]
+    served = float(dm.scores[i])
+    return {
+        "account_id": account_id,
+        "k": len(order),
+        "score_served": round(served, 4),
+        "band_served": band(served),
+        "model_score_original": round(base, 4),
+        "model_score_without_top_edges": round(now, 4),
+        "delta_model_score": round(base - now, 4),
+        "band_without_top_edges": band(now),
+        "dropped_edges": dropped,
+        "caveat": (
+            "fixed-model sensitivity probe: node features are held constant, "
+            "so the delta measures dependence on the signal carried by the "
+            "dropped edges, not a retrained model."
+        ),
+    }
+
+
+def case_document(dm: DeployedModel, account_id: str, k: int = 3, top_tx: int = 5) -> str:
+    """A complete, shareable investigation case file as Markdown.
+
+    Deterministic and grounded: every figure comes from the graph or the
+    frozen model. No LLM in the loop, nothing hallucinated.
+    """
+    f = account_facts(dm, account_id)
+    cf = counterfactual(dm, account_id, k=k)
+    lines = [
+        f"# Case file: {account_id}",
+        "",
+        (
+            "*Generated deterministically from graph facts and the deployed model "
+            f"(mule-hunt {__version__}). Every figure below is computed — no LLM "
+            "in the loop.*"
+        ),
+        "",
+        "## 1. Subject",
+        (
+            f"- Risk score: **{f['risk_score']:.4f}** ({f['risk_band'].upper()}), "
+            f"ranked **{f['rank']:,}** of {dm.data.num_nodes:,} accounts"
+        ),
+        f"- Label: {'fraud (ring)' if f['label'] else 'normal'}",
+    ]
+    if f["ring_id"] >= 0:
+        lines.append(f"- Ring member: ring {f['ring_id']} "
+                     f"({len(f['ring_members'])} members)")
+    lines.append(
+        f"- Activity: {f['n_out_edges']} outgoing / {f['n_in_edges']} incoming "
+        f"transfers (degree {f['degree']})"
+    )
+    if f["activity_edges"]:
+        lines.append(
+            f"- Timing: first edge {_ts(f['activity_start'])}, last "
+            f"{_ts(f['activity_end'])} — {f['activity_edges']} timestamped edges"
+        )
+
+    lines += ["", "## 2. Ring context"]
+    if f["ring_id"] >= 0:
+        lines += ["", *[f"    {l}" for l in ring_report(dm, f["ring_id"]).splitlines()]]
+    else:
+        lines.append("Not a ring member; risk comes from account traits and "
+                     "neighborhood patterns instead.")
+
+    lines += ["", f"## 3. Top suspicious transactions (top {top_tx})"]
+    if f["hot_edges"]:
+        for he in f["hot_edges"][:top_tx]:
+            lines.append(
+                f"- {he['src']} -> {he['dst']} | {_money(np.array([he['amount']]))} "
+                f"| transaction risk {he['risk']:.3f}"
+            )
+    else:
+        lines.append("No edge-head scores available (model trained without an edge head).")
+
+    lines += [
+        "",
+        f"## 4. Counterfactual sensitivity (drop top {int(cf['k'])} edges)",
+        f"- Served risk score: {cf['score_served']:.4f} ({cf['band_served'].upper()})",
+        f"- Model score unchanged (original): {cf['model_score_original']:.4f}",
+        (
+            f"- Model score without top edges: {cf['model_score_without_top_edges']:.4f} "
+            f"({cf['band_without_top_edges'].upper()})"
+        ),
+        f"- Delta: {cf['delta_model_score']:+.4f}",
+        "- Dropped edges: "
+        + ", ".join(f"{e['src']}->{e['dst']} (risk {e['risk']:.3f})" for e in cf["dropped_edges"]),
+        f"- Caveat: {cf['caveat']}",
+    ]
+
+    lines += ["", "## 5. Recommendation"]
+    if f["risk_band"] == "high":
+        if f["ring_id"] >= 0:
+            lines.append("Escalate for manual review: high-risk ring member. "
+                         "Flag the account and its ring for SAR review.")
+        else:
+            lines.append("Escalate for manual review: high-risk account with no "
+                         "ring membership.")
+    elif f["risk_band"] == "medium":
+        lines.append("Monitor: medium risk. Re-score on the next periodic sweep "
+                     "and verify counterparties.")
+    else:
+        lines.append("No action: low risk. Reviewed in the routine periodic sweep.")
+    return "\n".join(lines)
+
+
 def ring_facts(dm: DeployedModel, ring_id: int) -> dict:
     d = dm.data
     ring = d.ring_id.numpy()
@@ -324,6 +474,25 @@ def answer(dm: DeployedModel, question: str, k: int = 10) -> dict:
     if ring is not None and any(w in q for w in ("ring", "cycle", "group")):
         return {"kind": "ring", "question": question, "ring_id": ring,
                 "facts": ring_facts(dm, ring), "report": ring_report(dm, ring)}
+    if account is not None and any(w in q for w in ("case file", "case for", "write a case")):
+        return {"kind": "case", "question": question, "account_id": account,
+                "document": case_document(dm, account, k=3),
+                "report": f"Case file written for {account}. Retrieve the full "
+                          "Markdown document via /api/case or the structured "
+                          "answer under 'document'."}
+    if account is not None and any(
+        w in q for w in ("what if", "counterfactual", "would happen", "without those")
+    ):
+        cf = counterfactual(dm, account, k=3)
+        text = (
+            f"Counterfactual for {account}: served score {cf['score_served']:.3f} "
+            f"({cf['band_served']}); dropping its top {cf['k']} highest-risk "
+            f"transfers moves the model score from {cf['model_score_original']:.3f} "
+            f"to {cf['model_score_without_top_edges']:.3f} "
+            f"(delta {cf['delta_model_score']:+.3f}). {cf['caveat']}"
+        )
+        return {"kind": "counterfactual", "question": question, "account_id": account,
+                "facts": cf, "report": text}
     if any(w in q for w in ("top", "highest risk", "riskiest", "worst")):
         rows = top_accounts(dm, k)
         text = "Top risky accounts:\n" + "\n".join(
