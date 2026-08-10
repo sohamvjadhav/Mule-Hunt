@@ -98,6 +98,9 @@ async function loadAccount(accountId) {
     <div class="explain-box">
       <button id="explain-btn">Explain this account</button>
       <p class="muted" id="explain-text"></p>
+    </div>
+    <div class="explain-box">
+      <button id="case-btn">Download case file (.md)</button>
     </div>`;
   $("explain-btn").addEventListener("click", async () => {
     const text = $("explain-text");
@@ -125,6 +128,20 @@ async function loadAccount(accountId) {
       text.textContent = `explanation failed: ${err.message}`;
     }
     $("explain-btn").disabled = false;
+  });
+  $("case-btn").addEventListener("click", async () => {
+    try {
+      const c = await getJSON(`/api/case/${encodeURIComponent(a.account_id)}`);
+      const blob = new Blob([c.document], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `case-${a.account_id}.md`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`case file failed: ${err.message}`);
+    }
   });
 }
 

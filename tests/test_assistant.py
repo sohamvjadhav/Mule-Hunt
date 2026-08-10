@@ -1,15 +1,20 @@
 import numpy as np
+import torch
 
 from upifraud.assistant import (
     DeployedModel,
     account_facts,
     account_report,
     answer,
+    case_document,
+    counterfactual,
+    load_deployed,
     ring_report,
     top_accounts,
 )
 from upifraud.dataset import load_graph
 from upifraud.generate import generate_toy
+from upifraud.train import train_gnn
 
 
 def _dm(tmp_path, seed=5):
@@ -99,3 +104,73 @@ def test_top_accounts_sorted_desc(tmp_path):
     assert [r["risk_score"] for r in rows] == sorted(
         (r["risk_score"] for r in rows), reverse=True
     )
+
+
+def _dm_trained(tmp_path, seed=7):
+    data_dir = tmp_path / "data"
+    generate_toy(data_dir, n_accounts=150, n_tx=600, n_rings=3, seed=seed)
+    data = load_graph(data_dir, split="rings", test_rings=1, seed=seed)
+    train_gnn(data, model_name="sage", hidden=16, epochs=6, patience=2,
+              seed=seed, out_dir=tmp_path)
+    torch.save(data, tmp_path / "graph.pt")
+    return load_deployed(tmp_path)
+
+
+def _ring_member_id(dm):
+    aid, _ = _ring_member(dm)
+    return aid
+
+
+def test_counterfactual_drops_incident_edges_and_rescores(tmp_path):
+    dm = _dm_trained(tmp_path)
+    aid = _ring_member_id(dm)
+    i = dm.id_to_idx[aid]
+    src, dst = dm.src, dm.dst
+
+    cf = counterfactual(dm, aid, k=2)
+    assert len(cf["dropped_edges"]) == 2
+    for e in cf["dropped_edges"]:
+        idx = np.flatnonzero((src == dm.id_to_idx[e["src"]]) & (dst == dm.id_to_idx[e["dst"]]))
+        assert len(idx) == 1 and int(idx[0]) in np.flatnonzero((src == i) | (dst == i))
+    assert 0.0 <= cf["score_served"] <= 1.0
+    assert cf["band_served"] in ("low", "medium", "high")
+    assert abs(cf["delta_model_score"]) < 1.0
+    assert "fixed-model sensitivity" in cf["caveat"]
+
+    try:
+        counterfactual(dm, "does_not_exist")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+def test_case_document_is_a_complete_markdown_file(tmp_path):
+    dm = _dm_trained(tmp_path)
+    aid = _ring_member_id(dm)
+    doc = case_document(dm, aid, k=2, top_tx=3)
+    assert f"# Case file: {aid}" in doc
+    for section in (
+        "## 1. Subject",
+        "## 2. Ring context",
+        "## 3. Top suspicious transactions",
+        "## 4. Counterfactual sensitivity",
+        "## 5. Recommendation",
+    ):
+        assert section in doc
+    assert "mule-hunt" in doc and "no LLM" in doc
+    assert "Recommendation" in doc and doc.index("## 5. Recommendation") < len(doc)
+
+
+def test_answer_routes_case_and_counterfactual_intents(tmp_path):
+    dm = _dm_trained(tmp_path)
+    aid = _ring_member_id(dm)
+
+    out = answer(dm, f"write a case file for {aid}")
+    assert out["kind"] == "case"
+    assert out["account_id"] == aid
+    assert "# Case file:" in out["document"]
+
+    out = answer(dm, f"what if {aid} had no ring ties?")
+    assert out["kind"] == "counterfactual"
+    assert out["facts"]["account_id"] == aid
+    assert "Counterfactual for" in out["report"]

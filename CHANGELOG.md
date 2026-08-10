@@ -2,6 +2,20 @@
 
 All notable changes to Mule-Hunt are documented here, grouped by release.
 
+## 0.6.0
+
+### Added
+
+- Case files: `upifraud case <account_id>` renders a complete, shareable
+  Markdown investigation document (subject, ring context, top suspicious
+  transactions, counterfactual probe, recommendation); served at
+  `GET /api/case/{account_id}` and downloadable from the dashboard.
+- Counterfactual sensitivity analysis: drop an account's top-k highest-risk
+  edges and re-score the frozen model (`GET /api/counterfactual/{account_id}`,
+  also reachable through the assistant: "what if acc_X ...?").
+- Honest framing: counterfactuals are documented as fixed-model, feature-
+  constant probes (not retrained-model experiments).
+
 ## 0.5.0
 
 ### Added

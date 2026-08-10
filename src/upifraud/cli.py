@@ -492,6 +492,20 @@ def cmd_mcp(args) -> None:
     run_mcp(Path(args.out_dir))
 
 
+def cmd_case(args) -> None:
+    """Render a complete investigation case file (Markdown) for one account."""
+    from .assistant import case_document, load_deployed
+
+    dm = load_deployed(Path(args.out_dir))
+    doc = case_document(dm, args.account, k=args.k, top_tx=args.top_tx)
+    if args.output:
+        out = Path(args.output)
+        out.write_text(doc)
+        print(f"case file written to {out}")
+    else:
+        print(doc)
+
+
 def cmd_attack(args) -> None:
     """Adversarial-robustness experiment: train on the clean graph, then
     perturb held-out ring edges (inject camouflage or drop evidence) and
@@ -798,6 +812,14 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("mcp", help="run the MCP investigation server (stdio) for coding agents")
     p.add_argument("--out-dir", default="models")
     p.set_defaults(func=cmd_mcp)
+
+    p = sub.add_parser("case", help="render a complete investigation case file (Markdown) for one account")
+    p.add_argument("account", help="account id, e.g. acc_1344")
+    p.add_argument("--out-dir", default="models")
+    p.add_argument("--k", type=int, default=3, help="edges dropped in the counterfactual sensitivity probe")
+    p.add_argument("--top-tx", type=int, default=5, help="top suspicious transactions to list")
+    p.add_argument("--output", default=None, help="write the case file to this path instead of stdout")
+    p.set_defaults(func=cmd_case)
 
     args = parser.parse_args(argv)
     args.func(args)
