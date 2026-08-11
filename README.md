@@ -454,6 +454,32 @@ reported rather than tuned away. A more promising structural direction is
 outlined in [issue #3](https://github.com/sohamvjadhav/Mule-Hunt/issues/3)
 (transaction-level labels).
 
+### Experiment: scaling to larger graphs
+
+Hypothesis from the roadmap: the benchmark should still find rings when the
+graph grows. The same benchmark configuration (medium hardness, 50 rings, 10
+held out, GraphSAGE 2-layer + Random Forest, seed 42) was run at 30k and 50k
+accounts (generator `--scale` 0.003 / 0.005; wall clock on a laptop CPU).
+Full numbers in [`results/scaling.json`](results/scaling.json).
+
+| Size | Accounts | Transfers | Sage AUC | Sage AP | Sage ring recall | RF AUC | RF AP | RF ring recall | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10k | ~10,000 | ~90,000 | **0.671** | **0.079** | 0.359 | **0.603** | **0.065** | **0.269** | not recorded |
+| 30k | 30,000 | 300,149 | 0.656 | 0.023 | **0.373** | 0.488 | 0.011 | 0.100 | ~11 min |
+| 50k | 50,000 | 450,131 | 0.599 | 0.009 | 0.168 | 0.516 | 0.008 | 0.157 | ~59 min |
+
+**Verdict: ring discovery gets harder as the graph grows at a fixed ring
+count.** AP falls 0.079 → 0.023 → 0.009 and 50k ring recall collapses to
+0.168: the planted rings are a shrinking fraction of a much larger normal
+population, so the top-k an investigator would review fills with normal
+accounts. Edge AUC stays ≈1.0 — the per-transaction head still detects ring
+transfers trivially (amount/cycle signal), so the difficulty is in *ranking
+accounts*, not *finding suspicious transactions*. Cost grows sharply (11 → 59
+min). The negative result is reported rather than tuned away; an honest
+direction for real deployments is modeling ring priors (expected ring size,
+burstiness) directly instead of expecting the model to infer them from a
+cold, growing graph.
+
 ## Production hardening: calibration, cold-start, and drift
 
 Three mechanisms make the served scores more defensible in an operational
@@ -719,6 +745,8 @@ grounded tools instead of guessing:
 | `investigate(account_id)` | Facts + rendered report |
 | `ring_details(ring_id)` | Members, internal transfers, amounts, timing |
 | `top_risky(k)` | The k highest-risk accounts |
+| `counterfactual(account_id, k)` | Fixed-model sensitivity: score if the top-k risk edges were gone |
+| `case_file(account_id)` | Complete Markdown investigation document |
 
 Wire it up, e.g. in an MCP client config:
 
@@ -773,6 +801,8 @@ make demo          # end-to-end smoke run on the toy graph
 make mcp           # start the MCP investigation server for models/
 make build         # sdist + wheel
 make release-check # pyproject version must match the newest v* tag
+make release       # lint + test + version check, then prints the release checklist
+make review        # review the current diff with the local Codex CLI (needs npm + OPENAI_API_KEY)
 ```
 
 For quick iteration, use the toy generator:
@@ -828,8 +858,9 @@ counterfactual sensitivity analysis are implemented — see the
 [temporal section](#temporal-dynamic-graph-modeling), and the
 [case-file section](#case-files). The counterfactual probe is deliberately a
 fixed-model, feature-constant sensitivity check; a version that retrains on
-perturbed graphs is future work. Planned directions include scaling the
-benchmark to larger graphs.
+perturbed graphs is future work. Scaling to larger graphs is measured in the
+[scaling experiment](#experiment-scaling-to-larger-graphs) — with an honest
+negative verdict at fixed ring counts.
 
 ## License
 

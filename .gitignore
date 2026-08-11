@@ -13,3 +13,4 @@ build/
 models_leaky/
 bench/
 bench_*/
+bench-scale/

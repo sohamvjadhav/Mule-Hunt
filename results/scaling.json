@@ -1,0 +1,54 @@
+{
+  "config": {
+    "hardness": "medium",
+    "rings": 50,
+    "test_rings": 10,
+    "model": "sage",
+    "num_layers": 2,
+    "baseline": "rf",
+    "seed": 42,
+    "note": "Scale-up experiment: same benchmark config at 10k (committed benchmark.json), 30k, and 50k accounts. 10k values copied from results/benchmark.json (medium). 30k/50k runs use the external generator at scale 0.003/0.005."
+  },
+  "rows": [
+    {
+      "size_label": "10k",
+      "n_accounts": 10000,
+      "n_transactions": 90000,
+      "sage_auc": 0.671,
+      "sage_ap": 0.079,
+      "sage_ring_recall": 0.359,
+      "sage_edge_auc": 0.999,
+      "rf_auc": 0.603,
+      "rf_ap": 0.065,
+      "rf_ring_recall": 0.269,
+      "wall_minutes": null
+    },
+    {
+      "size_label": "30k",
+      "n_accounts": 30000,
+      "n_transactions": 300149,
+      "sage_auc": 0.656,
+      "sage_ap": 0.023,
+      "sage_ring_recall": 0.373,
+      "sage_edge_auc": 1.0,
+      "rf_auc": 0.488,
+      "rf_ap": 0.011,
+      "rf_ring_recall": 0.1,
+      "wall_minutes": 11.2
+    },
+    {
+      "size_label": "50k",
+      "n_accounts": 50000,
+      "n_transactions": 450131,
+      "sage_auc": 0.599,
+      "sage_ap": 0.009,
+      "sage_ring_recall": 0.168,
+      "sage_edge_auc": 0.999,
+      "rf_auc": 0.516,
+      "rf_ap": 0.008,
+      "rf_ring_recall": 0.157,
+      "wall_minutes": 59.0
+    }
+  ],
+  "verdict": "Ranking quality degrades as the graph grows at fixed ring count: AP falls 0.079 -> 0.023 -> 0.009 (10k/30k/50k) and ring recall collapses at 50k (0.168). The planted rings become a smaller fraction of a much larger normal population, so the top-k that matters to an investigator fills with normal accounts. Edge AUC stays ~1.0: the per-transaction head still detects ring transfers trivially. Cost grows sharply (11 min -> 59 min wall clock on laptop CPU). Interpretation: discovering unseen rings is a search problem that gets harder with scale unless ring priors (size, burstiness) are modeled explicitly."
+}
