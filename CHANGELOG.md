@@ -2,6 +2,20 @@
 
 All notable changes to Mule-Hunt are documented here, grouped by release.
 
+## 0.7.0
+
+### Added
+
+- MCP tools `counterfactual` and `case_file`: coding agents can now pull a
+  fixed-model sensitivity probe and a full Markdown investigation document
+  over stdio (server refactored to a testable `build_tools`).
+- Scale-up experiment: the medium-hardness benchmark run at 30k and 50k
+  accounts (`results/scaling.json`) with an honest verdict — AP falls
+  0.079 → 0.023 → 0.009 and 50k ring recall collapses as the graph grows at a
+  fixed ring count; edge AUC stays ~1.0.
+- Maintainer targets: `make release` (checklist) and `make review` (local
+  Codex CLI diff review).
+
 ## 0.6.0
 
 ### Added
