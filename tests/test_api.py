@@ -80,7 +80,8 @@ def test_frontend_served(tmp_path):
     client = _make_client(tmp_path)
     html = client.get("/").text
     assert "Mule-Hunt" in html
-    assert "Investigation assistant" in html and 'id="ask-form"' in html
+    assert "Investigation console" in html and 'id="composer"' in html
+    assert 'id="top-table"' in html and 'id="assistant-thread"' in html
     assert client.get("/styles.css").status_code == 200
     assert client.get("/app.js").status_code == 200
 

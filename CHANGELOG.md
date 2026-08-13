@@ -2,6 +2,23 @@
 
 All notable changes to Mule-Hunt are documented here, grouped by release.
 
+## 0.8.0
+
+### Changed
+
+- Premium dashboard overhaul: the browser console was rebuilt as a focused
+  investigation workspace — KPI hero row, top-50 risk queue with score bars,
+  live ring explorer, per-account canvas with risk gauge and 2-hop
+  neighborhood, risk-score histogram with 0.4/0.7 threshold markers, and a
+  threaded assistant with suggested questions. Light and dark themes (toggle
+  persisted in `localStorage`), ⌘K to ask, Esc to dismiss, case-file drawer
+  with backdrop, skeletons, reduced-motion support, and self-hosted fonts
+  (no external requests).
+- The summary endpoint now reports `mule_hunt_version`, so the console shows
+  the exact served release.
+- `GET /api/account/{account_id}` exposes `in_degree`, `out_degree`, and
+  `n_neighbors` for the canvas.
+
 ## 0.7.0
 
 ### Added

@@ -1,87 +1,257 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Mule-Hunt — UPI Fraud Risk Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Mule-Hunt · Investigation console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=Albert+Sans:ital@0;1&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B1220'/%3E%3Cpath d='M9 8v16M23 8v16M9 16h14' stroke='%2314B8A6' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%2314B8A6'/%3E%3C/svg%3E" />
 </head>
 <body>
-  <header class="topbar">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar" role="banner">
     <div class="brand">
-      <span class="brand-mark"></span>
-      <span class="brand-name">Mule-Hunt</span>
-      <span class="brand-sub">UPI fraud risk dashboard</span>
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="28" height="28">
+          <rect width="32" height="32" rx="8" fill="currentColor" opacity="0.08"/>
+          <path d="M9 8v16M23 8v16M9 16h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+          <circle cx="16" cy="16" r="2.6" fill="currentColor"/>
+        </svg>
+      </span>
+      <div class="brand-text">
+        <div class="brand-row">
+          <span class="brand-name">Mule-Hunt</span>
+          <span class="brand-sub">Investigation console</span>
+        </div>
+        <div class="brand-meta">
+          <span class="chip chip-meta" id="brand-model">loading model…</span>
+          <span class="dot" aria-hidden="true">·</span>
+          <span class="chip chip-meta" id="brand-fraud">— fraud rate</span>
+          <span class="dot" aria-hidden="true">·</span>
+          <span class="chip chip-meta" id="brand-version">v—</span>
+        </div>
+      </div>
     </div>
-    <div class="model-badge" id="model-badge">loading…</div>
+    <nav class="topnav" aria-label="Primary">
+      <a class="nav-link" href="/api/summary" target="_blank" rel="noopener">API</a>
+      <a class="nav-link" href="https://github.com/sohamvjadhav/Mule-Hunt" target="_blank" rel="noopener">GitHub</a>
+      <a class="nav-link" href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a>
+      <button class="icon-btn theme-toggle" type="button" aria-label="Toggle color theme" id="theme-toggle">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" class="ic-sun"><circle cx="12" cy="12" r="4" fill="currentColor"/><g stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></g></svg>
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" class="ic-moon"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="currentColor"/></svg>
+      </button>
+    </nav>
   </header>
 
-  <main>
-    <section class="cards" id="cards">
-      <div class="card"><div class="card-value" id="c-accounts">–</div><div class="card-label">Accounts</div></div>
-      <div class="card"><div class="card-value" id="c-tx">–</div><div class="card-label">Transactions</div></div>
-      <div class="card"><div class="card-value" id="c-fraud">–</div><div class="card-label">Flagged fraud accounts</div></div>
-      <div class="card"><div class="card-value" id="c-rings">–</div><div class="card-label">Fraud rings</div></div>
+  <main id="main" class="main">
+    <!-- KPI hero -->
+    <section class="kpis" aria-label="Network metrics">
+      <article class="kpi">
+        <div class="kpi-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="9" cy="8" r="3" stroke="currentColor" stroke-width="1.6" fill="none"/><circle cx="16" cy="13" r="2.4" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M3 20c.6-3.5 3.4-6 6.6-6 2 0 3.8.8 5 2.2M14 20c.4-2 2-3.5 4-3.5s3.4 1.2 4 3" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+        </div>
+        <div class="kpi-value" id="kpi-accounts">—</div>
+        <div class="kpi-label">Accounts</div>
+        <div class="kpi-sub" id="kpi-accounts-sub">— total graph size</div>
+      </article>
+      <article class="kpi">
+        <div class="kpi-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M3 7h13l-2-2M21 17H8l2 2" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="kpi-value" id="kpi-tx">—</div>
+        <div class="kpi-label">Transactions</div>
+        <div class="kpi-sub" id="kpi-tx-sub">— directed transfers</div>
+      </article>
+      <article class="kpi kpi-warn">
+        <div class="kpi-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l10 17H2L12 3z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </div>
+        <div class="kpi-value" id="kpi-fraud">—</div>
+        <div class="kpi-label">Flagged fraud accounts</div>
+        <div class="kpi-sub" id="kpi-fraud-sub">— ring-labelled positives</div>
+      </article>
+      <article class="kpi">
+        <div class="kpi-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" fill="none"/><circle cx="12" cy="12" r="5" stroke="currentColor" stroke-width="1.4" fill="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg>
+        </div>
+        <div class="kpi-value" id="kpi-rings">—</div>
+        <div class="kpi-label">Fraud rings</div>
+        <div class="kpi-sub" id="kpi-rings-sub">— coordinated cycles</div>
+      </article>
     </section>
 
-    <section class="panel">
-      <h2>Investigation assistant</h2>
-      <form id="ask-form" class="ask-form">
-        <input id="ask-input" type="text" autocomplete="off"
-          placeholder='Try "why is acc_7 risky?" · "describe ring 0" · "top risky accounts" · "network summary"' />
-        <button type="submit">Ask</button>
+    <!-- Assistant surface (centerpiece) -->
+    <section class="assistant" aria-label="Investigation assistant">
+      <header class="assistant-head">
+        <div class="assistant-title">
+          <span class="assistant-dot" aria-hidden="true"></span>
+          <h2>Ask the investigation console</h2>
+        </div>
+        <div class="assistant-meta">
+          <span class="kbd-hint"><kbd>⌘</kbd><kbd>K</kbd> to focus</span>
+        </div>
+      </header>
+      <div class="assistant-thread" id="assistant-thread" aria-live="polite">
+        <div class="bubble bubble-assistant empty">
+          <div class="bubble-text">
+            <strong>Grounded answers.</strong> Every figure is computed from the
+            deployed model and graph — no LLM, no hallucination. Try a suggestion
+            or type your own question about an account, ring, or the network.
+          </div>
+          <div class="suggested" role="group" aria-label="Suggested questions">
+            <button class="chip chip-suggest" type="button" data-q="top risky accounts">Top risky accounts</button>
+            <button class="chip chip-suggest" type="button" data-q="describe ring 0">Describe ring 0</button>
+            <button class="chip chip-suggest" type="button" data-q="network summary">Network summary</button>
+            <button class="chip chip-suggest" type="button" data-q="why is acc_7 risky?">Why is <code>acc_7</code> risky?</button>
+          </div>
+        </div>
+      </div>
+      <form class="composer" id="composer" autocomplete="off">
+        <label class="visually-hidden" for="composer-input">Ask a question</label>
+        <div class="composer-field">
+          <span class="composer-prefix" aria-hidden="true">→</span>
+          <input id="composer-input" type="text" name="q" placeholder='Ask: "why is acc_42 risky?", "describe ring 0", "top risky accounts", "network summary"' spellcheck="false" />
+          <button class="composer-submit" type="submit" aria-label="Send">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
       </form>
-      <pre id="ask-output" class="ask-output">Ask a natural-language question about accounts, rings, or the network. Answers are grounded in the model and graph — no fabricated numbers.</pre>
     </section>
 
-    <section class="grid">
-      <div class="panel">
-        <h2>Top risk accounts</h2>
-        <div class="table-wrap">
-          <table id="top-table">
-            <thead>
-              <tr><th>#</th><th>Account</th><th>Risk score</th><th>Band</th><th>Ring</th><th>Label</th><th>Degree</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
+    <!-- Work surface -->
+    <section class="surface">
+      <!-- Left column -->
+      <div class="col col-left">
+        <section class="panel" aria-label="Top risk accounts">
+          <header class="panel-head">
+            <h3>Investigation queue</h3>
+            <span class="panel-sub">Highest-risk accounts ranked by the deployed model</span>
+          </header>
+          <div class="table-wrap">
+            <table id="top-table" aria-describedby="top-caption">
+              <caption id="top-caption" class="visually-hidden">Top risk accounts</caption>
+              <thead>
+                <tr>
+                  <th scope="col" style="width:36px">#</th>
+                  <th scope="col">Account</th>
+                  <th scope="col">Risk</th>
+                  <th scope="col">Band</th>
+                  <th scope="col">Ring</th>
+                  <th scope="col" style="width:60px">Deg.</th>
+                </tr>
+              </thead>
+              <tbody id="top-tbody">
+                <tr class="skeleton-row" aria-hidden="true"><td colspan="6"><div class="skeleton"></div></td></tr>
+                <tr class="skeleton-row" aria-hidden="true"><td colspan="6"><div class="skeleton"></div></td></tr>
+                <tr class="skeleton-row" aria-hidden="true"><td colspan="6"><div class="skeleton"></div></td></tr>
+                <tr class="skeleton-row" aria-hidden="true"><td colspan="6"><div class="skeleton"></div></td></tr>
+                <tr class="skeleton-row" aria-hidden="true"><td colspan="6"><div class="skeleton"></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" aria-label="Ring explorer">
+          <header class="panel-head">
+            <h3>Ring explorer</h3>
+            <div class="panel-controls">
+              <select id="ring-select" aria-label="Choose a ring"></select>
+            </div>
+          </header>
+          <div class="ring-layout">
+            <div class="ring-canvas-wrap">
+              <svg id="ring-svg" viewBox="0 0 420 420" role="img" aria-label="Ring graph"></svg>
+              <div class="ring-legend">
+                <span class="legend-item"><i class="dot dot-fraud"></i> Ring member</span>
+                <span class="legend-item"><i class="dot dot-edge"></i> Internal transfer</span>
+              </div>
+            </div>
+            <aside class="ring-side" id="ring-side" aria-live="polite">
+              <div class="skeleton skeleton-block"></div>
+            </aside>
+          </div>
+        </section>
       </div>
 
-      <div class="panel">
-        <h2>Risk score distribution</h2>
-        <canvas id="dist-chart" height="180"></canvas>
+      <!-- Right column -->
+      <div class="col col-right">
+        <section class="panel canvas" aria-label="Account investigation">
+          <header class="panel-head">
+            <div>
+              <h3>Investigation canvas</h3>
+              <span class="panel-sub">Select an account to inspect</span>
+            </div>
+            <div class="panel-controls" id="canvas-actions" hidden>
+              <button class="btn btn-ghost" id="btn-explain" type="button">Explain</button>
+              <button class="btn btn-ghost" id="btn-counterfactual" type="button">Counterfactual</button>
+              <button class="btn btn-primary" id="btn-case" type="button">Case file</button>
+            </div>
+          </header>
+          <div class="canvas-body" id="canvas-body">
+            <div class="canvas-empty">
+              <svg viewBox="0 0 64 64" width="44" height="44" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" stroke="currentColor" stroke-width="1.5" fill="none" opacity="0.4"/>
+                <path d="M22 32h20M32 22v20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+              </svg>
+              <p>Pick an account from the queue or ask the assistant about one.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" aria-label="Risk score distribution">
+          <header class="panel-head">
+            <h3>Risk score distribution</h3>
+            <span class="panel-sub">Test-set scores with medium (0.4) and high (0.7) thresholds</span>
+          </header>
+          <div class="hist-wrap">
+            <svg id="hist-svg" viewBox="0 0 720 220" preserveAspectRatio="none" role="img" aria-label="Risk score histogram"></svg>
+            <div class="hist-legend">
+              <span class="legend-item"><i class="swatch swatch-low"></i> Low</span>
+              <span class="legend-item"><i class="swatch swatch-medium"></i> Medium</span>
+              <span class="legend-item"><i class="swatch swatch-high"></i> High</span>
+            </div>
+          </div>
+        </section>
       </div>
     </section>
 
-    <section class="grid">
-      <div class="panel">
-        <h2>Ring explorer
-          <select id="ring-select"></select>
-        </h2>
-        <div class="ring-layout">
-          <svg id="ring-svg" width="420" height="420" viewBox="0 0 420 420"></svg>
-          <div class="ring-list" id="ring-list"></div>
+    <!-- Case-file drawer -->
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  <section class="drawer" id="case-drawer" aria-label="Case file" hidden>
+      <header class="drawer-head">
+        <div>
+          <h3 id="case-title">Case file</h3>
+          <span class="panel-sub" id="case-sub">Deterministic, grounded, no LLM</span>
         </div>
-      </div>
-
-      <div class="panel">
-        <h2>Account detail</h2>
-        <div class="detail" id="detail">
-          <p class="muted">Select an account in the top table to inspect its risk and highest-risk neighbors.</p>
+        <div class="drawer-actions">
+          <button class="btn btn-ghost" id="case-copy" type="button">Copy</button>
+          <button class="btn btn-ghost" id="case-download" type="button">Download .md</button>
+          <button class="icon-btn" id="case-close" type="button" aria-label="Close case file">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
         </div>
-      </div>
+      </header>
+      <article class="case-doc" id="case-doc" tabindex="0" aria-label="Case file content"></article>
     </section>
   </main>
 
-  <footer class="footer">
-    <span id="footer-credit">Mule-Hunt ·
-      <a href="https://github.com/sohamvjadhav/Mule-Hunt" target="_blank" rel="noopener">GitHub</a> ·
-      <a href="https://github.com/sohamvjadhav/Mule-Hunt/issues" target="_blank" rel="noopener">Issues</a>
-    </span>
+  <footer class="footer" role="contentinfo">
+    <div class="footer-row">
+      <span>Mule-Hunt · grounded, deterministic, honest by design.</span>
+      <span class="footer-credit">
+        Built by
+        <a href="https://github.com/sohamvjadhav" target="_blank" rel="noopener">@sohamvjadhav</a>
+        · <a href="https://github.com/sohamvjadhav/Mule-Hunt" target="_blank" rel="noopener">source</a>
+        · <a href="https://github.com/sohamvjadhav/Mule-Hunt/blob/main/SECURITY.md" target="_blank" rel="noopener">security</a>
+      </span>
+    </div>
   </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="/app.js"></script>
 </body>

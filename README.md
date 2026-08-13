@@ -66,6 +66,12 @@ you can ask natural-language questions like "why is acc_7 risky?" or "describe
 ring 0" (backed by the grounded `POST /api/ask` endpoint — no LLM, no
 hallucination).
 
+The console is designed as an investigation workspace: a KPI hero row, the
+top-risk queue with score bars, a live ring explorer, a per-account canvas
+with a risk gauge, and a case-file drawer for shareable Markdown documents.
+Light and dark themes (persisted), ⌘K to focus the question box, and fully
+self-hosted fonts — the dashboard makes no external requests.
+
 Explanations are model-grounded: [GNNExplainer](https://pytorch-geometric.readthedocs.io/en/latest/generated/torch_geometric.explain.algorithm.GNNExplainer.html)
 runs on the account's 2-hop neighborhood and reports which features and which
 neighbors drive the risk score:

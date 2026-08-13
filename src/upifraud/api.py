@@ -39,6 +39,9 @@ class RiskResponse(BaseModel):
 
 class AccountDetail(RiskResponse):
     degree: int
+    in_degree: int
+    out_degree: int
+    n_neighbors: int
     true_label: int
     ring_id: int
     neighbors: list[dict]
@@ -231,6 +234,7 @@ def create_app(
             "brier_val_after": args.get("brier_val_after"),
             "cold_start_threshold": cold_start_threshold,
             "ring_sizes": {k: v for k, v in sorted(ring_counts.items()) if k >= 0},
+            "mule_hunt_version": __version__,
         }
 
     @app.get("/api/top")
@@ -277,12 +281,18 @@ def create_app(
                 }
             )
         nbr_ids.sort(key=lambda r: -r["risk_score"])
+        full_nbr_count = len(nbr_ids)
+        in_degree = int((dst == idx).sum())
+        out_degree = int((src == idx).sum())
         return AccountDetail(
             account_id=account_id,
             risk_score=round(float(scores[idx]), 4),
             risk_band=band(float(scores[idx])),
             rank=int(rank_map[idx]) + 1,
             degree=int(degree[idx]),
+            in_degree=in_degree,
+            out_degree=out_degree,
+            n_neighbors=full_nbr_count,
             true_label=int(data.y[idx]),
             ring_id=int(data.ring_id[idx]),
             neighbors=nbr_ids[:25],
