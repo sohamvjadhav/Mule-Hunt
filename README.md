@@ -784,9 +784,9 @@ src/upifraud/
 ├── generate.py     External and toy graph generators
 ├── mcp_server.py   MCP (stdio) tools for coding agents
 ├── models.py       GCN, GraphSAGE, and GATv2 (configurable depth/JK + edge head)
-└── train.py        GNN training and checkpoint serialization
+├── train.py        GNN training and checkpoint serialization
+└── frontend/       Static dashboard assets (bundled in the PyPI package)
 
-frontend/           Static dashboard assets
 tests/              Unit and API tests
 results/            Committed benchmark output
 pyproject.toml      Package metadata and dependencies

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mule-hunt"
-version = "0.8.0"
+version = "0.8.1"
 description = "Graph-neural-network fraud detection for UPI-style payment graphs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,6 +42,9 @@ upifraud = "upifraud.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+upifraud = ["frontend/*.html", "frontend/*.css", "frontend/*.js", "frontend/fonts/*.woff2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

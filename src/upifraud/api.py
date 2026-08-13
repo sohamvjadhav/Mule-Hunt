@@ -18,7 +18,7 @@ from . import __version__
 from .models import build_model
 from .train import standardize
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 OPENAI_MODEL = "gpt-5.6-luna"
 
 

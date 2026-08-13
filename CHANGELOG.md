@@ -2,6 +2,16 @@
 
 All notable changes to Mule-Hunt are documented here, grouped by release.
 
+## 0.8.1
+
+### Fixed
+
+- The dashboard now ships inside the PyPI wheel: the frontend moved into the
+  package (`src/upifraud/frontend/`, declared as package data), so
+  `pip install mule-hunt` + `upifraud serve` serves the full console — the
+  ring graph, canvas, assistant, and self-hosted fonts — instead of a bare
+  API with no dashboard.
+
 ## 0.8.0
 
 ### Changed
